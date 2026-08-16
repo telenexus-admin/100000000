@@ -322,6 +322,23 @@ CODE;
     // for already-onboarded RS/WireGuard routers; runtime guards still protect any
     // new plans that are later created with device=MikrotikHotspot.
     require_once $root . '/init.php';
+
+    // Hard safety gate: only make plan.device=Radius when the billing app can
+    // actually use its named RADIUS database connection.
+    $radiusFlag = strtolower(trim((string) ($config['radius_enable'] ?? '')));
+    if (in_array($radiusFlag, ['', '0', 'no', 'false', 'off', 'disabled'], true)) {
+        throw new RuntimeException('RADIUS is not enabled in billing configuration (radius_enable). No plans were migrated.');
+    }
+    try {
+        $radiusDb = ORM::get_db('radius');
+        $probe = $radiusDb->query('SELECT 1 FROM radcheck LIMIT 1');
+        if ($probe === false) {
+            throw new RuntimeException('radcheck query failed');
+        }
+    } catch (Throwable $e) {
+        throw new RuntimeException('Billing RADIUS database connection is not ready: ' . $e->getMessage());
+    }
+
     $convertedPlans = 0;
     try {
         $routers = ORM::for_table('tbl_routers')->find_many();
