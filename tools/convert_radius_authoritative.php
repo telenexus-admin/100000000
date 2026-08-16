@@ -340,6 +340,8 @@ CODE;
     }
 
     $convertedPlans = 0;
+    $planDeviceBackup = [];
+    $planBackupFile = $root . '/system/cache/radius_authoritative_plan_devices_' . date('Ymd_His') . '.json';
     try {
         $routers = ORM::for_table('tbl_routers')->find_many();
         foreach ($routers as $router) {
@@ -355,6 +357,7 @@ CODE;
                 ->find_many();
             foreach ($plans as $plan) {
                 if (strcasecmp(trim((string) ($plan['device'] ?? '')), 'Radius') !== 0) {
+                    $planDeviceBackup[(string) $plan['id']] = (string) ($plan['device'] ?? '');
                     $plan->device = 'Radius';
                     $plan->save();
                     $convertedPlans++;
@@ -362,8 +365,26 @@ CODE;
                 }
             }
         }
+        if ($planDeviceBackup) {
+            if (!is_dir(dirname($planBackupFile))) {
+                @mkdir(dirname($planBackupFile), 0755, true);
+            }
+            @file_put_contents($planBackupFile, json_encode($planDeviceBackup, JSON_PRETTY_PRINT));
+            echo "PLAN_BACKUP $planBackupFile\n";
+        }
     } catch (Throwable $e) {
-        throw new RuntimeException('Source patched, but plan migration failed: ' . $e->getMessage());
+        // Best-effort database rollback for any plan rows changed before failure.
+        foreach ($planDeviceBackup as $planId => $oldDevice) {
+            try {
+                $restorePlan = ORM::for_table('tbl_plans')->find_one((int) $planId);
+                if ($restorePlan) {
+                    $restorePlan->device = $oldDevice;
+                    $restorePlan->save();
+                }
+            } catch (Throwable $ignored) {
+            }
+        }
+        throw new RuntimeException('Source patched, but plan migration failed and was rolled back: ' . $e->getMessage());
     }
 
     echo "\nRADIUS_AUTHORITATIVE_CONVERSION_OK\n";
