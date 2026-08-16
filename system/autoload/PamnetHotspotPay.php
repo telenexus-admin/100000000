@@ -351,6 +351,70 @@ class PamnetHotspotPay
         return ['ok' => false, 'message' => 'no unused c2b'];
     }
 
+    /** Return true for routers onboarded through the RS WireGuard/RADIUS control plane. */
+    public static function isRadiusRouterName($routerName)
+    {
+        $routerName = trim((string) $routerName);
+        if ($routerName === '' || $routerName === '0') {
+            return false;
+        }
+        if (strcasecmp($routerName, 'radius') === 0) {
+            return true;
+        }
+        try {
+            $router = ORM::for_table('tbl_routers')->where('name', $routerName)->find_one();
+            if (!$router) {
+                return false;
+            }
+            return strtolower(trim((string) ($router['management_transport'] ?? ''))) === 'wireguard'
+                && trim((string) ($router['wg_tunnel_ip'] ?? '')) !== '';
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    /** Check active recharge or latest payment metadata for RADIUS authority. */
+    public static function usernameUsesRadius($username)
+    {
+        $username = trim((string) $username);
+        if ($username === '') {
+            return false;
+        }
+        try {
+            $recharge = ORM::for_table('tbl_user_recharges')
+                ->where('username', $username)
+                ->where('status', 'on')
+                ->order_by_desc('id')
+                ->find_one();
+            if ($recharge) {
+                $plan = ORM::for_table('tbl_plans')->where('id', $recharge['plan_id'])->find_one();
+                if ($plan && class_exists('Package') && method_exists('Package', 'usesRadiusForPlan') && Package::usesRadiusForPlan($plan)) {
+                    return true;
+                }
+                if (self::isRadiusRouterName($recharge['routers'] ?? '')) {
+                    return true;
+                }
+            }
+            $pg = ORM::for_table('tbl_payment_gateway')
+                ->where('username', $username)
+                ->order_by_desc('id')
+                ->find_one();
+            if ($pg) {
+                $plan = ((int) ($pg['plan_id'] ?? 0) > 0)
+                    ? ORM::for_table('tbl_plans')->where('id', (int) $pg['plan_id'])->find_one()
+                    : null;
+                if ($plan && class_exists('Package') && method_exists('Package', 'usesRadiusForPlan') && Package::usesRadiusForPlan($plan)) {
+                    return true;
+                }
+                if (self::isRadiusRouterName($pg['routers'] ?? '')) {
+                    return true;
+                }
+            }
+        } catch (Throwable $e) {
+        }
+        return false;
+    }
+
     /**
      * Finish deferred recharge + router sync after portal already got Resultcode=3.
      */
@@ -361,8 +425,16 @@ class PamnetHotspotPay
         $planId = (int) ($meta['plan_id'] ?? 0);
         $routers = trim((string) ($meta['routers'] ?? 'PMNINTERNET'));
         $transId = trim((string) ($meta['trans_id'] ?? ''));
+        $radiusAuth = self::isRadiusRouterName($routers);
+        try {
+            if (!$radiusAuth && $planId > 0 && class_exists('Package') && method_exists('Package', 'usesRadiusForPlan')) {
+                $plan = ORM::for_table('tbl_plans')->where('id', $planId)->find_one();
+                $radiusAuth = $plan ? Package::usesRadiusForPlan($plan) : false;
+            }
+        } catch (Throwable $eRadius) {
+        }
         if ($username === '' || $customerId <= 0 || $planId <= 0) {
-            if ($username !== '') {
+            if ($username !== '' && !self::usernameUsesRadius($username)) {
                 self::connectDeviceNow($username);
             }
             return;
@@ -387,7 +459,12 @@ class PamnetHotspotPay
                 _log('PamnetHotspotPay deferred recharge ' . $username . ': ' . $e->getMessage(), 'System', 1);
             }
         }
-        // Critical: put the paying phone online immediately (do not wait for portal PAP).
+        // RADIUS-authoritative routers must authenticate through the normal
+        // MikroTik Hotspot /login request, which triggers Access-Request.
+        if ($radiusAuth || self::usernameUsesRadius($username)) {
+            return;
+        }
+        // Legacy/manual routers retain the old API-assisted path.
         self::connectDeviceNow($username);
     }
 
@@ -401,6 +478,13 @@ class PamnetHotspotPay
         $username = trim((string) $username);
         if ($username === '') {
             return ['ok' => false, 'message' => 'empty'];
+        }
+        if (self::usernameUsesRadius($username)) {
+            return [
+                'ok' => true,
+                'logged_in' => false,
+                'message' => 'RADIUS authentication delegated to MikroTik Hotspot login',
+            ];
         }
         $ok = self::ensureHotspotUser($username);
         $loggedIn = false;

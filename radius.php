@@ -21,6 +21,58 @@ if (empty($action)) {
 
 $code = 200;
 
+/** Resolve the billing router name from the NAS tunnel address registered at onboarding. */
+function rs_radius_request_router_name()
+{
+    $nasIp = trim((string) _post('nasIpAddress'));
+    if ($nasIp === '') {
+        $nasIp = trim((string) _req('nasIpAddress'));
+    }
+    if ($nasIp === '') {
+        return '';
+    }
+    try {
+        $nas = ORM::for_table('nas', 'radius')->where('nasname', $nasIp)->find_one();
+        return $nas ? trim((string) ($nas['routers'] ?? '')) : '';
+    } catch (Throwable $e) {
+        return '';
+    }
+}
+
+/** Only return an unexpired active recharge that belongs to this RADIUS NAS/router. */
+function rs_radius_find_active_recharge($username)
+{
+    $username = trim((string) $username);
+    if ($username === '') {
+        return null;
+    }
+    $routerName = rs_radius_request_router_name();
+    try {
+        $q = ORM::for_table('tbl_user_recharges')
+            ->where_raw('BINARY username = ?', [$username])
+            ->where('status', 'on')
+            ->order_by_desc('id');
+        if ($routerName !== '') {
+            $q->where('routers', $routerName);
+        }
+        foreach ($q->find_many() as $row) {
+            $expiry = strtotime(trim((string) ($row['expiration'] ?? '') . ' ' . (string) ($row['time'] ?? '23:59:59')));
+            if ($expiry !== false && $expiry <= time()) {
+                continue;
+            }
+            $plan = ORM::for_table('tbl_plans')->where('id', $row['plan_id'])->find_one();
+            if (!$plan) {
+                continue;
+            }
+            if (class_exists('Package') && method_exists('Package', 'usesRadiusForPlan') && Package::usesRadiusForPlan($plan)) {
+                return $row;
+            }
+        }
+    } catch (Throwable $e) {
+    }
+    return null;
+}
+
 //debug
 // if (!empty($action)) {
 //     file_put_contents("$action.json", json_encode([
@@ -200,13 +252,13 @@ try {
                     ], 401);
                 }
             }
-            $tur = ORM::for_table('tbl_user_recharges')->whereRaw("BINARY username = '$username'")->find_one();
+            $tur = rs_radius_find_active_recharge($username);
             if (!$tur) {
                 // if check if pppoe_username
                 $c = ORM::for_table('tbl_customers')->select('username')->select('pppoe_password')->whereRaw("BINARY pppoe_username = '$username'")->find_one();
                 if ($c) {
                     $username = $c['username'];
-                    $tur = ORM::for_table('tbl_user_recharges')->whereRaw("BINARY username = '$username'")->find_one();
+                    $tur = rs_radius_find_active_recharge($username);
                 }
             }
             if ($tur) {
@@ -240,7 +292,7 @@ try {
                                 $v->status = "1";
                                 $v->used_date = date('Y-m-d H:i:s');
                                 $v->save();
-                                $tur = ORM::for_table('tbl_user_recharges')->whereRaw("BINARY username = '$username'")->find_one();
+                                $tur = rs_radius_find_active_recharge($username);
                                 if ($tur) {
                                     process_radiust_rest($tur, $code);
                                 } else {
@@ -300,13 +352,13 @@ try {
             $d->macaddr = _post('macAddr');
             $d->dateAdded = date('Y-m-d H:i:s');
             // ensure accounting data stored is from active AllxSys customer
-            $tur = ORM::for_table('tbl_user_recharges')->whereRaw("BINARY username = '$username' AND `status` = 'on' AND `routers` = 'radius'")->find_one();
+            $tur = rs_radius_find_active_recharge($username);
             if (!$tur) {
                 // check if pppoe_username
                 $c = ORM::for_table('tbl_customers')->select('username')->whereRaw("BINARY pppoe_username = '$username'")->find_one();
                 if ($c) {
                     $username = $c['username'];
-                    $tur = ORM::for_table('tbl_user_recharges')->whereRaw("BINARY username = '$username'")->find_one();
+                    $tur = rs_radius_find_active_recharge($username);
                 }
             }
             if ($tur) {

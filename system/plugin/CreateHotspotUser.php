@@ -844,6 +844,33 @@ function PamnetHotspotAutologin($username, $ip, $mac)
     }
 }
 
+function PamnetAccountUsesRadius($username)
+{
+    $username = trim((string) $username);
+    if ($username === '') {
+        return false;
+    }
+    try {
+        if (class_exists('PamnetHotspotPay') && method_exists('PamnetHotspotPay', 'usernameUsesRadius')) {
+            return PamnetHotspotPay::usernameUsesRadius($username);
+        }
+        $recharge = ORM::for_table('tbl_user_recharges')
+            ->where('username', $username)
+            ->where('status', 'on')
+            ->order_by_desc('id')
+            ->find_one();
+        if (!$recharge) {
+            return false;
+        }
+        $plan = ORM::for_table('tbl_plans')->where('id', $recharge['plan_id'])->find_one();
+        return $plan && class_exists('Package') && method_exists('Package', 'usesRadiusForPlan')
+            ? Package::usesRadiusForPlan($plan)
+            : false;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
 function PamnetAutologinApi()
 {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -856,6 +883,23 @@ function PamnetAutologinApi()
     $mac = $clientInfo['mac'];
     PamnetStorePortalClient($username, $ip, $mac);
     PamnetLogPortalClient('autologin', $username, $clientInfo);
+
+    if (PamnetAccountUsesRadius($username)) {
+        $cust = ORM::for_table('tbl_customers')->where('username', $username)->find_one();
+        $pass = ($cust && !empty($cust['password'])) ? (string) $cust['password'] : '1234';
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'status' => 'success',
+            'ok' => true,
+            'logged_in' => false,
+            'username' => $username,
+            'tyhK' => $pass,
+            'message' => 'Use MikroTik Hotspot login; authentication is handled by RADIUS',
+            'fallback_pap' => true,
+            'Resultcode' => '3',
+        ]);
+        exit();
+    }
 
     if (class_exists('PamnetHotspotPay')) {
         PamnetHotspotPay::activateFromC2B($username);
@@ -912,18 +956,21 @@ function CheckActiveHotspot()
 
     $active = PamnetUsernameHasActivePlan($account_number);
     if ($active) {
-        $ready = PamnetEnsureHotspotOnRouter($account_number);
+        $radiusAuth = PamnetAccountUsesRadius($account_number);
+        $ready = true;
         $loggedIn = false;
-        $authMsg = 'Active package found';
-        // Attempt API login whenever we have any identity hint (MAC or IP).
-        // Missing half is resolved from MikroTik host table — brand/model never required.
-        if ($clientIp !== '' || $clientMac !== '') {
-            $al = PamnetHotspotAutologin($account_number, $clientIp, $clientMac);
-            $loggedIn = !empty($al['ok']) || !empty($al['logged_in']);
-            if (!$loggedIn && !empty($al['message'])) {
-                $authMsg = (string) $al['message'];
-                if (function_exists('_log')) {
-                    _log('check_active auth fail ' . $account_number . ': ' . $authMsg, 'System', 1);
+        $authMsg = $radiusAuth ? 'Active RADIUS package found' : 'Active package found';
+        if (!$radiusAuth) {
+            $ready = PamnetEnsureHotspotOnRouter($account_number);
+            // Legacy/manual routers may still use API-assisted login.
+            if ($clientIp !== '' || $clientMac !== '') {
+                $al = PamnetHotspotAutologin($account_number, $clientIp, $clientMac);
+                $loggedIn = !empty($al['ok']) || !empty($al['logged_in']);
+                if (!$loggedIn && !empty($al['message'])) {
+                    $authMsg = (string) $al['message'];
+                    if (function_exists('_log')) {
+                        _log('check_active auth fail ' . $account_number . ': ' . $authMsg, 'System', 1);
+                    }
                 }
             }
         }
@@ -1169,6 +1216,43 @@ function VerifyHotspot()
     $deferMeta = null;
 
     $respondPaid = function ($pass, $mpesacode) use ($account_number, $clientIp, $clientMac, &$deferMeta) {
+        $radiusAuth = false;
+        try {
+            if (class_exists('PamnetHotspotPay')) {
+                $radiusAuth = PamnetHotspotPay::usernameUsesRadius($account_number);
+                if (!$radiusAuth && is_array($deferMeta)) {
+                    $radiusAuth = PamnetHotspotPay::isRadiusRouterName($deferMeta['routers'] ?? '');
+                }
+                // RADIUS must be provisioned before the browser submits /login;
+                // otherwise the first Access-Request can arrive before radcheck exists.
+                if ($radiusAuth && !PamnetUsernameHasActivePlan($account_number)) {
+                    if (!is_array($deferMeta) || empty($deferMeta['needs_recharge'])) {
+                        $pg = ORM::for_table('tbl_payment_gateway')
+                            ->where('username', $account_number)
+                            ->where('status', 2)
+                            ->order_by_desc('id')
+                            ->find_one();
+                        $cust = ORM::for_table('tbl_customers')->where('username', $account_number)->find_one();
+                        if ($pg && $cust && (int) ($pg['plan_id'] ?? 0) > 0 && trim((string) ($pg['gateway_trx_id'] ?? '')) !== '') {
+                            $deferMeta = [
+                                'ok' => true,
+                                'needs_recharge' => true,
+                                'trans_id' => (string) $pg['gateway_trx_id'],
+                                'plan_id' => (int) $pg['plan_id'],
+                                'routers' => (string) ($pg['routers'] ?? ''),
+                                'customer_id' => (int) $cust['id'],
+                                'username' => $account_number,
+                            ];
+                        }
+                    }
+                    if (is_array($deferMeta) && !empty($deferMeta['needs_recharge'])) {
+                        PamnetHotspotPay::completeDeferredRecharge($deferMeta);
+                        $deferMeta['needs_recharge'] = false;
+                    }
+                }
+            }
+        } catch (Throwable $eRadius) {
+        }
         header('Content-Type: application/json; charset=utf-8');
         header('Connection: close');
         $payload = json_encode([
@@ -1194,6 +1278,11 @@ function VerifyHotspot()
                 }
             }
             @flush();
+        }
+        if ($radiusAuth) {
+            // Browser will now POST credentials to MikroTik /login. MikroTik then
+            // sends the Access-Request to FreeRADIUS; no RouterOS API login here.
+            exit();
         }
         ignore_user_abort(true);
         try {

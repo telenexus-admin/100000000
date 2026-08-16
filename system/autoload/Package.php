@@ -101,7 +101,7 @@ class Package
                     }
                 } catch (Throwable $e) {
                 }
-                if (class_exists('PamnetHotspotPay') && method_exists('PamnetHotspotPay', 'ensureHotspotUser')) {
+                if (!self::usesRadiusForPlan($p) && class_exists('PamnetHotspotPay') && method_exists('PamnetHotspotPay', 'ensureHotspotUser')) {
                     try {
                         PamnetHotspotPay::ensureHotspotUser($currentUser !== '' ? $currentUser : $existingUser);
                     } catch (Throwable $e) {
@@ -466,7 +466,7 @@ class Package
             if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
                 // Race: another callback saved the same invoice first — treat as success
                 _log("Payment already recorded (idempotent): $inv (User: {$c['username']}, Plan: {$p['name_plan']})");
-                if (class_exists('PamnetHotspotPay') && method_exists('PamnetHotspotPay', 'ensureHotspotUser')) {
+                if (!self::usesRadiusForPlan($p) && class_exists('PamnetHotspotPay') && method_exists('PamnetHotspotPay', 'ensureHotspotUser')) {
                     try {
                         PamnetHotspotPay::ensureHotspotUser($c['username']);
                     } catch (Throwable $ex) {
@@ -791,11 +791,55 @@ class Package
         return $tax;
     }
 
+    /**
+     * RS/WireGuard routers are RADIUS-authoritative. Legacy/manual routers keep
+     * their configured device driver. This lets old plan rows migrate safely
+     * without requiring an API login or a local /ip hotspot user.
+     */
+    public static function usesRadiusForPlan($plan)
+    {
+        if (!$plan) {
+            return false;
+        }
+        $device = trim((string) ($plan['device'] ?? ''));
+        $routerName = trim((string) ($plan['routers'] ?? ''));
+        if (strcasecmp($device, 'Radius') === 0 || (int) ($plan['is_radius'] ?? 0) === 1 || strcasecmp($routerName, 'radius') === 0) {
+            return true;
+        }
+        if ($routerName === '') {
+            return false;
+        }
+        try {
+            $router = ORM::for_table('tbl_routers')->where('name', $routerName)->find_one();
+            if (!$router) {
+                return false;
+            }
+            $transport = strtolower(trim((string) ($router['management_transport'] ?? '')));
+            $tunnelIp = trim((string) ($router['wg_tunnel_ip'] ?? ''));
+            return $transport === 'wireguard' && $tunnelIp !== '';
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
     public static function getDevice($plan)
     {
         global $DEVICE_PATH;
         if ($plan === false) {
             return "none";
+        }
+        if (self::usesRadiusForPlan($plan)) {
+            // Persist the migration when this is an ORM row so subsequent UI and
+            // jobs also see the authoritative RADIUS device.
+            try {
+                if (is_object($plan)) {
+                    $plan->device = 'Radius';
+                    $plan->is_radius = 1;
+                    $plan->save();
+                }
+            } catch (Throwable $e) {
+            }
+            return $DEVICE_PATH . DIRECTORY_SEPARATOR . 'Radius.php';
         }
         if (!isset($plan['device'])) {
             return "none";

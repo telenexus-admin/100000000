@@ -1248,38 +1248,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function apiAutologinThenBrowse(account, password) {
-        if (window.__pamnetWifiOnline) { return Promise.resolve(true); }
-        var user = resolveHotspotAccount(account);
-        var pass = password || '1234';
-        var id = getMikrotikClientIdentity();
-        if (!user) { return Promise.resolve(false); }
-        // Always attempt server login when we have any lease hint (mac OR ip).
-        // Server resolves the missing half from MikroTik host table.
-        // If both missing (UNKNOWN_DEVICE), skip API and use browser PAP — still allowed.
-        if (!id.mac && !id.ip) {
-            try { console.log('pamnet: no lease id (' + (id.device || 'UNKNOWN') + ') — browser Hotspot login'); } catch (eL) {}
-            return Promise.resolve(false);
-        }
-        showWifiConnecting('Connecting…', 'Authorizing your device on Wi-Fi…');
-        return pamnetFetch('autologin', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({account_number: user, mac: id.mac, ip: id.ip, password: pass, device: id.device})
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data && data.logged_in === true) {
-                return true;
-            }
-            try {
-                console.log('pamnet: autologin not online', (data && data.message) || '', '→ PAP fallback');
-            } catch (eM) {}
-            return false;
-        })
-        .catch(function(err) {
-            try { console.log('pamnet: autologin error', err); } catch (eC) {}
-            return false;
-        });
+        // RS/WireGuard Hotspot authentication is RADIUS-authoritative.
+        // Returning false sends credentials through the router's normal /login
+        // form, which causes MikroTik to issue the RADIUS Access-Request.
+        return Promise.resolve(false);
     }
 
     function isMikroTikVar(v) {
