@@ -182,6 +182,7 @@ REDIRECT_JS = r'''    function redirectAfterPayment(paidUser, pass) {
             }
         }, 80);
     }
+
 '''
 
 
@@ -214,7 +215,7 @@ def patch_plain():
         s,
         '    function redirectAfterPayment(paidUser, pass) {\n',
         '    function pollPaymentOnce() {\n',
-        REDIRECT_JS + '    function pollPaymentOnce() {\n',
+        REDIRECT_JS,
         'hotspot_login.html redirectAfterPayment',
     )
     p.write_text(s)
@@ -257,7 +258,7 @@ def patch_download():
         s,
         '$htmlContent .= "    function redirectAfterPayment(paidUser, pass) {\\n";\n',
         '$htmlContent .= "    function pollPaymentOnce() {\\n";\n',
-        php_emit(REDIRECT_JS.rstrip()) + '$htmlContent .= "    function pollPaymentOnce() {\\n";\n',
+        php_emit(REDIRECT_JS.rstrip()),
         'download.php redirectAfterPayment',
     )
     p.write_text(s)
