@@ -428,7 +428,47 @@ class Radius
         // Mikrotik Spesific
         $this->upsertCustomer($customer['username'], 'Port-Limit', ($plan['type'] == 'PPPOE') ? 1 : $plan['shared_users']);
         $this->upsertCustomer($customer['username'], 'Mikrotik-Wireless-Comment', $customer['fullname']);
+        $this->syncHotspotNasBinding($customer['username'], $plan);
         return true;
+    }
+
+    /**
+     * Bind SQL-backed Hotspot credentials to the RS/WireGuard NAS that owns
+     * the plan.  This is a FreeRADIUS radcheck comparison item, not a reply
+     * attribute.  A username bought on router A must not authenticate on B.
+     */
+    public function syncHotspotNasBinding($username, $plan)
+    {
+        $username = trim((string) $username);
+        if ($username === '' || !$plan || strcasecmp((string) ($plan['type'] ?? ''), 'Hotspot') !== 0) {
+            return;
+        }
+
+        $routerName = trim((string) ($plan['routers'] ?? ''));
+        $tunnelIp = '';
+        if ($routerName !== '') {
+            try {
+                $router = ORM::for_table('tbl_routers')->where('name', $routerName)->find_one();
+                if ($router) {
+                    $transport = strtolower(trim((string) ($router['management_transport'] ?? '')));
+                    $candidate = trim((string) ($router['wg_tunnel_ip'] ?? ''));
+                    if ($transport === 'wireguard' && filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                        $tunnelIp = $candidate;
+                    }
+                }
+            } catch (Throwable $e) {
+                $tunnelIp = '';
+            }
+        }
+
+        if ($tunnelIp !== '') {
+            $this->upsertCustomer($username, 'NAS-IP-Address', $tunnelIp, '==');
+            return;
+        }
+
+        // If a Hotspot account is deliberately moved back to a legacy/manual
+        // Radius plan, do not leave an old RS NAS restriction behind.
+        $this->delAtribute($this->getTableCustomer(), 'NAS-IP-Address', 'username', $username);
     }
 
     private function delAtribute($table, $attribute, $key, $value)
