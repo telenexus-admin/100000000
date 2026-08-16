@@ -1,0 +1,57 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local runtime/state
+.suspended
+*.log
+*.pid
+*.lock
+
+# Secrets / local config
+config.php
+credentials.txt
+.env
+.env.*
+!.env.example
+
+# Application runtime cache/compiled files
+system/cache/*
+!system/cache/.gitkeep
+ui/compiled/*
+!ui/compiled/.gitkeep
+
+# Uploads / generated assets / backups
+system/uploads/*
+!system/uploads/.gitkeep
+!system/uploads/hotspot/.license
+system/uploads/backup/*
+system/uploads/ads/*
+
+# Webhook/testing artifacts
+pages/*webhook*.html
+C2bValidationResponse.txt
+
+# Dependencies (install in deployment/CI)
+vendor/
+system/vendor/
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+
+# Extra local/runtime protection
+*.bak*
+/cache/
+
+# Generated QR cache
+/qrcode/cache/
+
+# Old/temporary source copies
+*.orig
+*.filepart

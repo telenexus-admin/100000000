@@ -1,0 +1,5 @@
+License Key: ISP-LKD0PX17
+Expiry Date: 2026-06-24
+Admin Username: pamnetsolutions
+Admin Password: [stored securely]
+DB User: [stored securely]

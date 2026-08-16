@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ACTION="${1:-}"
+FREERADIUS_BIN="$(command -v freeradius || command -v radiusd || true)"
+[[ "$(id -u)" -eq 0 ]] || { echo "This helper must run as root." >&2; exit 1; }
+[[ -n "$FREERADIUS_BIN" ]] || { echo "FreeRADIUS is not installed." >&2; exit 1; }
+
+validate_config() {
+  "$FREERADIUS_BIN" -XC >/tmp/rs-radius-config-check.log 2>&1 || { tail -n 100 /tmp/rs-radius-config-check.log >&2; return 1; }
+}
+assert_no_public_radius() {
+  local public
+  public="$(ss -H -lunp 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\*|\[::\]):(1812|1813)$/ {print}')"
+  [[ -z "$public" ]] || { echo "Public RADIUS listeners detected; refusing unsafe start." >&2; echo "$public" >&2; return 1; }
+}
+case "$ACTION" in
+  reload|restart)
+    validate_config
+    systemctl restart freeradius
+    systemctl is-active --quiet freeradius || { journalctl -u freeradius -n 80 --no-pager >&2; exit 1; }
+    assert_no_public_radius || { systemctl stop freeradius; exit 1; }
+    echo "FreeRADIUS restarted with private listeners only."
+    ;;
+  check)
+    validate_config; assert_no_public_radius; systemctl is-active --quiet freeradius
+    echo "FreeRADIUS configuration and listener safety checks passed."
+    ;;
+  status)
+    systemctl is-active freeradius; systemctl is-enabled freeradius
+    ss -H -lunp 2>/dev/null | awk '$4 ~ /:(1812|1813|18120)$/ {print}'
+    ;;
+  *) echo "Usage: $0 {reload|restart|check|status}" >&2; exit 2 ;;
+esac

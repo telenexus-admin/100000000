@@ -1,0 +1,27 @@
+$(if http-status == 302)Hotspot login success$(endif)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="pragma" content="no-cache">
+<meta http-equiv="expires" content="-1">
+<meta http-equiv="refresh" content="0; url=$(link-redirect)">
+<title>Connected</title>
+<script>
+(function () {
+  try {
+    var u = '$(link-redirect)';
+    if (u && u.indexOf('$(') === -1) {
+      window.location.replace(u);
+      return;
+    }
+  } catch (e) {}
+  try { window.location.replace('status.html'); } catch (e2) {}
+})();
+</script>
+</head>
+<body style="font-family:system-ui,sans-serif;text-align:center;padding:2rem;">
+<p>You are connected. Opening internet…</p>
+</body>
+</html>

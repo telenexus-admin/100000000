@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ACTION="${1:-}"
+PUBLIC_KEY="${2:-}"
+TUNNEL_IP="${3:-}"
+CONFIG_FILE="${RS_WIREGUARD_CONFIG:-/etc/rs-radius/wireguard.ini}"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+    echo "This helper must run as root." >&2
+    exit 1
+fi
+
+read_config_value() {
+    local key="$1"
+    awk -F= -v wanted="$key" '
+        /^[[:space:]]*[#;]/ { next }
+        NF >= 2 {
+            k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+            if (k == wanted) {
+                $1=""; sub(/^=/, "", $0); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+                print $0; exit
+            }
+        }
+    ' "$CONFIG_FILE"
+}
+
+[[ -r "$CONFIG_FILE" ]] || { echo "WireGuard public configuration is missing." >&2; exit 1; }
+WG_INTERFACE="${RS_WG_INTERFACE:-$(read_config_value interface)}"
+WG_CIDR="${RS_WG_CIDR:-$(read_config_value cidr)}"
+WG_SERVER_IP="${RS_WG_SERVER_IP:-$(read_config_value server_ip)}"
+WG_CONF="/etc/wireguard/${WG_INTERFACE}.conf"
+
+validate_runtime() {
+    [[ "$WG_INTERFACE" =~ ^[A-Za-z0-9_.-]{1,80}$ ]] || { echo "Invalid WireGuard interface." >&2; exit 1; }
+    [[ -f "$WG_CONF" ]] || { echo "WireGuard configuration not found." >&2; exit 1; }
+    wg show "$WG_INTERFACE" >/dev/null 2>&1 || { echo "WireGuard interface is not active." >&2; exit 1; }
+}
+
+validate_peer() {
+    [[ "$PUBLIC_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] || { echo "Invalid WireGuard public key." >&2; exit 1; }
+    python3 - "$TUNNEL_IP" "$WG_CIDR" "$WG_SERVER_IP" <<'PY'
+import ipaddress, sys
+ip = ipaddress.ip_address(sys.argv[1])
+network = ipaddress.ip_network(sys.argv[2], strict=False)
+server = ipaddress.ip_address(sys.argv[3])
+if ip.version != 4 or network.version != 4 or ip not in network or ip == server:
+    raise SystemExit(1)
+PY
+}
+
+activate_peer() {
+    validate_runtime
+    validate_peer
+    export PUBLIC_KEY TUNNEL_IP WG_CONF
+    python3 <<'PY'
+import os, re, tempfile
+from pathlib import Path
+path = Path(os.environ['WG_CONF'])
+public_key = os.environ['PUBLIC_KEY']
+allowed_ip = os.environ['TUNNEL_IP'] + '/32'
+text = path.read_text()
+parts = re.split(r'(?m)(?=^\[Peer\]\s*$)', text)
+interface = parts[0].rstrip() + '\n'
+kept = []
+for block in parts[1:]:
+    key_match = re.search(r'(?mi)^\s*PublicKey\s*=\s*(\S+)\s*$', block)
+    ips_match = re.search(r'(?mi)^\s*AllowedIPs\s*=\s*(.+?)\s*$', block)
+    key = key_match.group(1).strip() if key_match else ''
+    ips = [x.strip() for x in ips_match.group(1).split(',')] if ips_match else []
+    if key == public_key or allowed_ip in ips:
+        continue
+    kept.append(block.rstrip() + '\n')
+peer = f'\n[Peer]\nPublicKey = {public_key}\nAllowedIPs = {allowed_ip}\n'
+new_text = interface + ''.join('\n' + block for block in kept).rstrip() + peer
+fd, tmp = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(new_text); handle.flush(); os.fsync(handle.fileno())
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp): os.unlink(tmp)
+PY
+    local stripped
+    stripped="$(mktemp)"
+    trap 'rm -f "$stripped"' RETURN
+    wg-quick strip "$WG_INTERFACE" >"$stripped"
+    wg syncconf "$WG_INTERFACE" "$stripped"
+    rm -f "$stripped"
+    trap - RETURN
+
+    wg show "$WG_INTERFACE" allowed-ips | awk -v key="$PUBLIC_KEY" -v ip="$TUNNEL_IP/32" '$1 == key && $2 == ip {f=1} END {exit f?0:1}' || {
+        echo "WireGuard peer verification failed." >&2; exit 1;
+    }
+    echo "WireGuard peer activated for ${TUNNEL_IP}."
+}
+
+case "$ACTION" in
+  activate) activate_peer ;;
+  check) validate_runtime; echo "WireGuard management interface is ready." ;;
+  *) echo "Usage: $0 {activate PUBLIC_KEY TUNNEL_IP|check}" >&2; exit 2 ;;
+esac

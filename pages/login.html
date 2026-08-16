@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FASTNET</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/core-js/3.8.3/core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            DEFAULT: '#15803d',
+                            50: '#f0fdf4',
+                            100: '#dcfce7',
+                            200: '#bbf7d0',
+                            300: '#86efac',
+                            400: '#4ade80',
+                            500: '#22c55e',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
+                            900: '#14532d'
+                        }
+                    },
+                    fontFamily: {
+                        lexend: ['Lexend', 'sans-serif']
+                    },
+                    animation: {
+                        'spin-fast': 'spin 0.5s linear infinite'
+                    }
+                }
+            }
+        };
+    </script>
+</head>
+<body class="font-lexend min-h-screen bg-gradient-to-b from-brand-800 to-brand-900 text-gray-100">
+    <div class="container mx-auto px-2 py-4 max-w-3xl">
+        <div class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl mb-6 overflow-hidden border border-white/10">
+            <div class="p-3">
+                <h1 class="text-2xl font-bold text-center text-green-300 mb-3">FASTNET HOTSPOT</h1>
+                <p class="text-gray-100/90 text-center text-sm mb-4">Select package → Enter M-Pesa number → Complete payment</p>
+                <div class="flex items-center justify-center gap-2 py-2 px-4 bg-white/5 rounded-xl">
+                    <i class="fas fa-headset text-green-300"></i>
+                    <p class="text-sm font-medium">Customer Care: <a id="customerCareLink" href="tel:0718289977"><span id="customerCareNumber">0718289977</span></a></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="space-y-4 mb-6">
+            <div class="flex items-center justify-between">
+                <h2 class="text-xl font-semibold text-green-300">Our Packages</h2>
+                <div class="h-px flex-grow bg-white/10 ml-4"></div>
+            </div>
+            <div id="adCard" class="hidden bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl overflow-hidden border border-white/10 p-4">
+                <a id="adLinkWrap" href="#" target="_blank" rel="noopener" class="block pointer-events-none">
+                    <div class="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                        <div id="adIconWrap" class="hidden w-14 h-14 rounded-full bg-white/10 border border-white/10 items-center justify-center flex-shrink-0">
+                            <i id="adIcon" class="text-green-300 text-2xl"></i>
+                        </div>
+                        <img id="adImage" src="" alt="Advertisement" class="hidden w-full sm:w-40 h-28 object-cover rounded-lg border border-white/10">
+                        <div class="flex-1">
+                            <h3 id="adTitle" class="text-lg font-semibold text-green-300"></h3>
+                            <p id="adMessage" class="text-sm text-gray-100/90 mt-1"></p>
+                        </div>
+                    </div>
+                </a>
+            </div>
+            <div id="cards-container" class="grid grid-cols-3 sm:grid-cols-3 lg:grid-cols-4 gap-2"></div>
+        </div>
+
+        <button onclick="redeemVoucher()" class="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-4 px-6 rounded-xl shadow-lg transition duration-200 flex items-center justify-center gap-3 mb-6">
+            <i class="fas fa-ticket-alt"></i>
+            <span>Redeem Voucher</span>
+        </button>
+
+        <div class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl overflow-hidden border border-white/10 mb-6">
+            <div class="p-6 space-y-8">
+                <div class="space-y-4">
+                    <h3 class="text-lg font-semibold text-green-300">Reconnect with M-Pesa Message</h3>
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <input id="mpesaCodeInput" type="text" placeholder="Paste M-Pesa message (e.g., TCK15SKB4Z)" class="flex-grow px-4 py-3 bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500/50 text-white placeholder:text-gray-400">
+                        <button id="reconnectBtn" class="bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-6 rounded-xl transition duration-200">Reconnect</button>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <h3 class="text-lg font-semibold text-green-300">Reconnect with Account Number</h3>
+                    <form id="loginForm" action="$(link-login-only)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
+                        <input type="hidden" name="dst" value="$(link-orig)">
+                        <input type="hidden" name="popup" value="true">
+                        <span id="mikrotikError" data-error="$(error)" style="display:none"></span>
+                        <span id="deviceMac" data-mac="$(mac)" style="display:none"></span>
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <input id="usernameInput" name="username" type="text" placeholder="Enter Username (e.g., ACC123456)" class="flex-grow px-4 py-3 bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500/50 text-white placeholder:text-gray-400" style="text-transform: uppercase;" oninput="this.value = this.value.toUpperCase().replace(/\s/g, '')" autocomplete="off">
+                            <button id="submitBtn" type="button" onclick="submitLogin()" class="bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-6 rounded-xl transition duration-200">Connect</button>
+                        </div>
+                        <input type="hidden" name="password" value="1234">
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center">
+            <p class="text-sm text-gray-300">&copy; <span id="footerYear"></span> powered by Antiqua.</p>
+        </div>
+    </div>
+
+<script>
+const APP_URL = 'https://antiqua.smartisp.co.ke';
+const ROUTER_ID = 1;
+
+function getDeviceMac() {
+    var el = document.getElementById('deviceMac');
+    var mac = el ? (el.getAttribute('data-mac') || '').trim() : '';
+    if (!mac || mac.indexOf('$(') === 0) {
+        return '';
+    }
+    return mac;
+}
+
+function attemptHotspotAutoConnect(onInactive) {
+    var accountId = getCookie('account_number') || '';
+    var deviceMac = getDeviceMac();
+
+    if (!accountId && !deviceMac) {
+        if (typeof onInactive === 'function') {
+            onInactive();
+        }
+        return;
+    }
+
+    fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=check_active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            account_number: accountId,
+            mac_address: deviceMac,
+            router_id: ROUTER_ID
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data || data.status !== 'success' || !data.active) {
+            if (typeof onInactive === 'function') {
+                onInactive();
+            }
+            return;
+        }
+
+        var username = data.username || accountId;
+        if (username) {
+            setCookie('account_number', username, 365);
+            document.getElementById('usernameInput').value = username;
+        }
+
+        if (sessionStorage.getItem('autoConnectTriggered')) {
+            return;
+        }
+        sessionStorage.setItem('autoConnectTriggered', 'true');
+
+        var overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.background = 'rgba(0,0,0,0.85)';
+        overlay.style.display = 'flex';
+        overlay.style.flexDirection = 'column';
+        overlay.style.justifyContent = 'center';
+        overlay.style.alignItems = 'center';
+        overlay.style.zIndex = '9999';
+        overlay.style.color = '#fff';
+        overlay.style.fontFamily = 'Lexend, sans-serif';
+        overlay.style.fontSize = '1.3rem';
+        overlay.style.letterSpacing = '1px';
+
+        var remaining = data.time_remaining ? ' (' + data.time_remaining + ' left)' : '';
+        overlay.innerHTML =
+            '<div class="text-center">' +
+            '<div class="mb-4 animate-spin-fast">' +
+            '<i class="fas fa-spinner fa-spin fa-3x text-orange"></i>' +
+            '</div>' +
+            '<p id="connectText">Reconnecting your session' + remaining + '<span class="dots"></span></p>' +
+            '</div>';
+        document.body.appendChild(overlay);
+
+        var dots = 0;
+        var dotInterval = setInterval(function() {
+            dots = (dots + 1) % 4;
+            var dotsEl = document.querySelector('.dots');
+            if (dotsEl) {
+                dotsEl.textContent = '.'.repeat(dots);
+            }
+        }, 500);
+
+        setTimeout(function() {
+            var loginForm = document.getElementById('loginForm');
+            if (loginForm) {
+                loginForm.submit();
+            }
+        }, 300);
+
+        setTimeout(function() {
+            clearInterval(dotInterval);
+            if (!document.getElementById('loginForm')) {
+                return;
+            }
+            try { sessionStorage.removeItem('autoConnectTriggered'); } catch (e) {}
+            if (overlay.parentNode) {
+                overlay.remove();
+            }
+            var mikrotikErrorEl = document.getElementById('mikrotikError');
+            var errAfter = mikrotikErrorEl ? (mikrotikErrorEl.getAttribute('data-error') || '').trim() : '';
+            if (window.Swal && errAfter && errAfter !== '$(error)') {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Could not reconnect',
+                    text: errAfter + ' — tap Connect to retry, or contact support if this continues.',
+                    confirmButtonColor: '#15803d'
+                });
+            }
+        }, 8000);
+    })
+    .catch(function() {
+        if (typeof onInactive === 'function') {
+            onInactive();
+        }
+    });
+}
+
+function fetchData() {
+    fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=hotspot_plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ router_id: ROUTER_ID })
+    })
+    .then(r => r.json())
+    .then(data => populateCards(Array.isArray(data) ? { data: data } : data))
+    .catch(() => {});
+}
+
+function loadHotspotSettings() {
+    fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=hotspot_settings')
+        .then(r => r.json())
+        .then(data => {
+            if (!data || data.status !== 'success' || !data.data) return;
+            var phone = (data.data.phone || '').toString().trim();
+            if (!phone) return;
+            var phoneLink = document.getElementById('customerCareLink');
+            var phoneText = document.getElementById('customerCareNumber');
+            if (phoneLink) phoneLink.setAttribute('href', 'tel:' + phone);
+            if (phoneText) phoneText.textContent = phone;
+
+            var adEnabled = (data.data.ad_enabled || '').toString() === '1';
+            var adTitle = (data.data.ad_title || '').toString().trim();
+            var adMessage = (data.data.ad_message || '').toString().trim();
+            var adImageUrl = (data.data.ad_image_url || '').toString().trim();
+            var adLinkUrl = (data.data.ad_link_url || '').toString().trim();
+            var adIconClass = (data.data.ad_icon_class || '').toString().trim();
+            var adCard = document.getElementById('adCard');
+            var adTitleEl = document.getElementById('adTitle');
+            var adMessageEl = document.getElementById('adMessage');
+            var adImageEl = document.getElementById('adImage');
+            var adIconWrapEl = document.getElementById('adIconWrap');
+            var adIconEl = document.getElementById('adIcon');
+            var adLinkWrap = document.getElementById('adLinkWrap');
+
+            if (adCard && adEnabled && (adTitle || adMessage || adImageUrl || adIconClass)) {
+                if (adTitleEl) adTitleEl.textContent = adTitle || 'Advertisement';
+                if (adMessageEl) adMessageEl.textContent = adMessage || '';
+                if (adImageEl) {
+                    if (adImageUrl) {
+                        adImageEl.src = adImageUrl;
+                        adImageEl.classList.remove('hidden');
+                        if (adIconWrapEl) adIconWrapEl.classList.add('hidden');
+                    } else {
+                        adImageEl.classList.add('hidden');
+                        if (adIconWrapEl) {
+                            if (adIconClass) {
+                                adIconWrapEl.classList.remove('hidden');
+                                adIconWrapEl.classList.add('flex');
+                                if (adIconEl) adIconEl.className = adIconClass + ' text-green-300 text-2xl';
+                            } else {
+                                adIconWrapEl.classList.add('hidden');
+                            }
+                        }
+                    }
+                }
+                if (adLinkWrap) {
+                    if (adLinkUrl) {
+                        adLinkWrap.href = adLinkUrl;
+                        adLinkWrap.classList.remove('pointer-events-none');
+                    } else {
+                        adLinkWrap.href = '#';
+                        adLinkWrap.classList.add('pointer-events-none');
+                    }
+                }
+                adCard.classList.remove('hidden');
+            } else if (adCard) {
+                adCard.classList.add('hidden');
+            }
+        })
+        .catch(() => {});
+}
+
+function populateCards(data) {
+    var cardsContainer = document.getElementById('cards-container');
+    cardsContainer.innerHTML = '';
+    if (!data || !data.data) return;
+
+    data.data.forEach(function(router) {
+        if (!router.plans_hotspot) return;
+        router.plans_hotspot.sort((a, b) => parseFloat(a.price || 0) - parseFloat(b.price || 0));
+
+        router.plans_hotspot.forEach(function(item) {
+            var planId = item.planId || item.id;
+            var routerId = item.routerId || ROUTER_ID;
+            var price = item.price || 0;
+            var cardDiv = document.createElement('div');
+            cardDiv.className = 'group relative cursor-pointer bg-white rounded-xl overflow-hidden transition-all duration-300 hover:scale-105 hover:shadow-xl border border-gray-100';
+            cardDiv.onclick = function() { handlePhoneNumberSubmission(planId, routerId, price); };
+            cardDiv.innerHTML =
+                "<div class='flex flex-col h-full p-1 space-y-0'>" +
+                "<div class='text-center'><h3 class='font-semibold text-brand-800 uppercase text-xs sm:text-sm md:text-base lg:text-base xl:text-base line-clamp-1'>" + (item.planname || item.name_plan || 'PLAN') + "</h3></div>" +
+                "<div class='text-center bg-brand-50 rounded-lg p-1'><p class='text-lg sm:text-xl font-bold text-brand-700'><span class='text-xs sm:text-sm text-brand-900/70'>" + (item.currency || 'KES') + "</span> " + price + "</p></div>" +
+                "<div class='space-y-0 text-center mt-auto'>" +
+                "<p class='text-brand-800 font-medium text-xs sm:text-sm'><i class='fas fa-clock mr-1 text-brand-600'></i> " + (item.validity || 1) + " " + (item.timelimit || item.validity_unit || 'hour') + "</p>" +
+                "<p class='text-brand-900/70 font-medium text-xs sm:text-sm'><i class='fas fa-wifi mr-1 text-brand-500'></i> " + (item.speeds || 'UNLIMITED') + "</p>" +
+                "</div></div>" +
+                "<div class='absolute inset-0 border-2 border-brand-500/0 group-hover:border-brand-500/20 rounded-xl transition-all duration-300'></div>";
+            cardsContainer.appendChild(cardDiv);
+        });
+    });
+}
+
+function formatPhoneNumber(phoneNumber) {
+    if (phoneNumber.startsWith('+')) phoneNumber = phoneNumber.substring(1);
+    if (phoneNumber.startsWith('0')) phoneNumber = '254' + phoneNumber.substring(1);
+    if (phoneNumber.match(/^(7|1)/)) phoneNumber = '254' + phoneNumber;
+    return phoneNumber;
+}
+
+function setCookie(name, value, days) {
+    var expires = "";
+    if (days) {
+        var date = new Date();
+        date.setTime(date.getTime() + days * 24 * 60 * 60 * 1000);
+        expires = "; expires=" + date.toUTCString();
+    }
+    document.cookie = name + "=" + (value || "") + expires + "; path=/";
+    try { localStorage.setItem(name, value); } catch (e) {}
+}
+
+function getCookie(name) {
+    var nameEQ = name + "=";
+    var ca = document.cookie.split(';');
+    for (var i = 0; i < ca.length; i++) {
+        var c = ca[i];
+        while (c.charAt(0) === ' ') c = c.substring(1);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length);
+    }
+    try {
+        var localValue = localStorage.getItem(name);
+        if (localValue) {
+            setCookie(name, localValue, 365);
+            return localValue;
+        }
+    } catch (e) {}
+    return null;
+}
+
+function generateAccountId() {
+    return 'ACC' + Math.floor(10000 + Math.random() * 90000);
+}
+
+function persistAccountId() {
+    var accountId = getCookie('account_number');
+    if (!accountId) {
+        accountId = generateAccountId();
+        setCookie('account_number', accountId, 365);
+    }
+    return accountId;
+}
+
+function handlePhoneNumberSubmission(planId, routerId, price) {
+    Swal.fire({
+        title: 'Enter Your Mpesa Number',
+        input: 'number',
+        text: 'You are about to pay Kes: ' + price + '. Enter number and tap Pay Now.',
+        showCancelButton: true,
+        confirmButtonColor: '#15803d',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Pay Now',
+        showLoaderOnConfirm: true,
+        preConfirm: (phoneNumber) => {
+            if (!phoneNumber) throw new Error('Phone number is required');
+            var formattedPhoneNumber = formatPhoneNumber(phoneNumber);
+            var accountId = getCookie('account_number') || generateAccountId();
+            setCookie('account_number', accountId, 365);
+            document.getElementById('usernameInput').value = accountId;
+
+            return fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=grant', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    phone_number: formattedPhoneNumber,
+                    plan_id: planId,
+                    router_id: routerId,
+                    account_number: accountId,
+                    mac_address: getDeviceMac()
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'error') throw new Error(data.message);
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Processing',
+                    html: 'A payment request has been sent to your phone.',
+                    showConfirmButton: false,
+                    allowOutsideClick: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                        checkPaymentStatus();
+                    }
+                });
+                return formattedPhoneNumber;
+            })
+            .catch(error => Swal.showValidationMessage(error.message));
+        },
+        allowOutsideClick: () => !Swal.isLoading()
+    });
+}
+
+function checkPaymentStatus() {
+    let checkInterval = setInterval(() => {
+        $.ajax({
+            url: APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=verify',
+            method: 'POST',
+            data: JSON.stringify({
+                account_number: document.getElementById('usernameInput').value,
+                mac_address: getDeviceMac(),
+                router_id: ROUTER_ID
+            }),
+            contentType: 'application/json',
+            dataType: 'json',
+            success: function(data) {
+                if (data.Resultcode === '3') {
+                    clearInterval(checkInterval);
+                    Swal.fire({ icon: 'success', title: 'Payment Successful', text: data.Message, showConfirmButton: false });
+                    setTimeout(function() { document.getElementById('loginForm').submit(); }, 1500);
+                } else if (data.Resultcode === '2') {
+                    clearInterval(checkInterval);
+                    Swal.fire({ icon: 'error', title: 'Payment Issue', text: data.Message || 'Payment failed' });
+                }
+            }
+        });
+    }, 2000);
+
+    setTimeout(() => {
+        clearInterval(checkInterval);
+        Swal.fire({ icon: 'warning', title: 'Timeout', text: 'Payment verification timed out. Please try again.' });
+    }, 600000);
+}
+
+function redeemVoucher() {
+    Swal.fire({
+        title: 'Redeem Voucher',
+        input: 'text',
+        inputPlaceholder: 'Enter voucher code',
+        inputValidator: function(value) { if (!value) return 'You need to enter a voucher code!'; },
+        confirmButtonColor: '#15803d',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Redeem',
+        showLoaderOnConfirm: true,
+        preConfirm: (voucherCode) => {
+            var accountId = getCookie('account_number') || generateAccountId();
+            setCookie('account_number', accountId, 365);
+            return fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=redeem_voucher', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    voucher_code: voucherCode,
+                    account_number: accountId,
+                    router_id: ROUTER_ID,
+                    mac_address: getDeviceMac()
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'error') throw new Error(data.message);
+                return data;
+            })
+            .catch(error => Swal.showValidationMessage(error.message));
+        },
+        allowOutsideClick: () => !Swal.isLoading()
+    }).then((result) => {
+        if (result.isConfirmed && result.value && result.value.username) {
+            document.querySelector('input[name="username"]').value = result.value.username;
+            setTimeout(function() { document.getElementById('loginForm').submit(); }, 1000);
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('footerYear').textContent = new Date().getFullYear();
+    document.getElementById('usernameInput').value = persistAccountId();
+    document.getElementById('reconnectBtn').addEventListener('click', function() {
+        var mpesaCode = (document.getElementById('mpesaCodeInput').value || '').trim();
+        fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=redeem_mpesa_code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mpesa_code: mpesaCode })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                Swal.fire({ icon: 'success', title: 'Reconnected', text: data.message || 'Success', showConfirmButton: false });
+                document.querySelector('input[name="username"]').value = data.username || document.querySelector('input[name="username"]').value;
+                setTimeout(function() { document.getElementById('loginForm').submit(); }, 1000);
+            } else {
+                Swal.fire({ icon: 'error', title: 'Reconnection Failed', text: data.message || 'Failed' });
+            }
+        })
+        .catch(function() {
+            Swal.fire({ icon: 'error', title: 'Error', text: 'Failed to reconnect. Please try again.' });
+        });
+    });
+});
+
+function submitLogin() {
+    document.getElementById('loginForm').submit();
+}
+
+fetchData();
+loadHotspotSettings();
+
+document.addEventListener("DOMContentLoaded", function() {
+    var mikrotikErrorEl = document.getElementById("mikrotikError");
+    var mikrotikError = mikrotikErrorEl ? (mikrotikErrorEl.getAttribute("data-error") || "").trim() : "";
+    if (mikrotikError && mikrotikError !== "$(error)") {
+        try { sessionStorage.removeItem("autoConnectTriggered"); } catch (e) {}
+        if (window.Swal) {
+            Swal.fire({
+                icon: "warning",
+                title: "Session expired",
+                text: mikrotikError + " — please pick a plan or redeem a voucher to reconnect.",
+                confirmButtonColor: "#15803d"
+            });
+        }
+        return;
+    }
+
+    // Auto-reconnect by cookie or device MAC (works even after "Forget network").
+    attemptHotspotAutoConnect();
+});
+</script>
+</body>
+</html>

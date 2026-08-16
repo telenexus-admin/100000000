@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FASTNET - Connected</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <noscript><meta http-equiv="refresh" content="1; url=$(link-status)"></noscript>
+    <style>
+        body { font-family: 'Lexend', sans-serif; }
+        .pulse { animation: pulse 1s ease-in-out infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-green-800 to-green-900 text-gray-100">
+    <div class="container mx-auto px-4 py-6 max-w-md">
+        <div class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl border border-white/10 p-5">
+            <div class="flex items-center justify-center gap-3 mb-4">
+                <i id="statusIcon" class="fas fa-circle text-green-400 pulse"></i>
+                <h1 class="text-xl font-bold text-green-200">You're Connected</h1>
+            </div>
+
+            <div class="space-y-2 text-sm">
+                <div class="flex justify-between border-b border-white/10 pb-1"><span class="text-gray-300">User</span><span class="font-semibold">$(username)</span></div>
+                <div class="flex justify-between border-b border-white/10 pb-1"><span class="text-gray-300">IP</span><span>$(ip)</span></div>
+                <div class="flex justify-between border-b border-white/10 pb-1"><span class="text-gray-300">Uptime</span><span id="uptime">$(uptime)</span></div>
+                <div class="flex justify-between border-b border-white/10 pb-1"><span class="text-gray-300">Downloaded</span><span>$(bytes-in-nice)</span></div>
+                <div class="flex justify-between border-b border-white/10 pb-1"><span class="text-gray-300">Uploaded</span><span>$(bytes-out-nice)</span></div>
+                <div class="flex justify-between pb-1"><span class="text-gray-300">Heartbeat</span><span id="heartbeat" class="text-green-300">checking...</span></div>
+            </div>
+
+            <form id="logoutForm" action="$(link-logout)" method="post" class="mt-5">
+                <button type="submit" class="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-3 rounded-xl">
+                    <i class="fas fa-sign-out-alt mr-2"></i>Log out
+                </button>
+            </form>
+
+            <form id="reloginForm" action="$(link-login-only)" method="post" style="display:none">
+                <input type="hidden" name="username" value="$(username)">
+                <input type="hidden" name="password" value="1234">
+                <input type="hidden" name="dst" value="$(link-orig)">
+                <input type="hidden" name="popup" value="true">
+            </form>
+            <span id="deviceMac" data-mac="$(mac)" style="display:none"></span>
+
+            <p class="text-center text-xs text-gray-400 mt-4">Session check runs every 1s. If your package is still active, you will reconnect automatically.</p>
+        </div>
+    </div>
+
+<script>
+(function () {
+    var APP_URL = 'https://antiqua.smartisp.co.ke';
+    var ROUTER_ID = 1;
+    var STATUS_URL   = "$(link-status)";
+    var LOGIN_URL    = "$(link-login)";
+    var CHECK_URL    = STATUS_URL;
+    var HOTSPOT_USER = "$(username)";
+    var CP_PROBE_URL = "http://neverssl.com/";
+
+    var CHECK_INTERVAL = 1000;
+    var FAIL_THRESHOLD = 2;
+    var failures = 0;
+    var stopped  = false;
+    var reconnecting = false;
+
+    var hbEl = document.getElementById("heartbeat");
+    var iconEl = document.getElementById("statusIcon");
+
+    function getDeviceMac() {
+        var el = document.getElementById('deviceMac');
+        var mac = el ? (el.getAttribute('data-mac') || '').trim() : '';
+        if (!mac || mac.indexOf('$(') === 0) {
+            return '';
+        }
+        return mac;
+    }
+
+    function markAlive() {
+        failures = 0;
+        reconnecting = false;
+        if (hbEl) { hbEl.textContent = "ok (" + new Date().toLocaleTimeString() + ")"; hbEl.className = "text-green-300"; }
+        if (iconEl) iconEl.className = "fas fa-circle text-green-400 pulse";
+    }
+
+    function submitSilentRelogin() {
+        var form = document.getElementById('reloginForm');
+        if (form && HOTSPOT_USER && HOTSPOT_USER.indexOf('$(') !== 0) {
+            if (hbEl) { hbEl.textContent = "reconnecting..."; hbEl.className = "text-yellow-300"; }
+            form.submit();
+            return true;
+        }
+        return false;
+    }
+
+    function redirectToLogin() {
+        try {
+            var probe = document.createElement("iframe");
+            probe.style.display = "none";
+            probe.src = CP_PROBE_URL + "?t=" + Date.now();
+            document.body.appendChild(probe);
+        } catch (e) {}
+        setTimeout(function () {
+            try { window.location.replace(LOGIN_URL); }
+            catch (e) { window.location.href = LOGIN_URL; }
+        }, 250);
+    }
+
+    function attemptReconnect(reason) {
+        if (stopped || reconnecting) {
+            return;
+        }
+        reconnecting = true;
+        stopped = true;
+        if (hbEl) { hbEl.textContent = "reconnecting (" + reason + ")"; hbEl.className = "text-yellow-300"; }
+        if (iconEl) iconEl.className = "fas fa-circle text-yellow-400 pulse";
+
+        fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=check_active', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                account_number: HOTSPOT_USER,
+                mac_address: getDeviceMac(),
+                router_id: ROUTER_ID
+            })
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data && data.status === 'success' && data.active) {
+                if (!submitSilentRelogin()) {
+                    redirectToLogin();
+                }
+                return;
+            }
+            redirectToLogin();
+        })
+        .catch(function () {
+            if (!submitSilentRelogin()) {
+                redirectToLogin();
+            }
+        });
+    }
+
+    function markDead(reason) {
+        if (stopped) return;
+        attemptReconnect(reason);
+    }
+
+    function ping() {
+        if (stopped) return;
+        fetch(CHECK_URL + (CHECK_URL.indexOf("?") === -1 ? "?" : "&") + "t=" + Date.now(), {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store"
+        })
+        .then(function (r) {
+            if (r.redirected && /login/i.test(r.url)) { markDead("redirect"); return; }
+            if (r.status >= 400) { failures++; if (failures >= FAIL_THRESHOLD) markDead("http " + r.status); return; }
+            return r.text().then(function (body) {
+                if (/name=["']?username["']?/i.test(body) && /link-login/i.test(body) === false) {
+                    markDead("login-form");
+                    return;
+                }
+                markAlive();
+            });
+        })
+        .catch(function () {
+            failures++;
+            if (failures >= FAIL_THRESHOLD) markDead("net");
+        });
+    }
+
+    if (STATUS_URL && STATUS_URL.indexOf("$(") !== 0) {
+        ping();
+        setInterval(ping, CHECK_INTERVAL);
+    } else if (hbEl) {
+        hbEl.textContent = "preview mode";
+    }
+})();
+</script>
+</body>
+</html>

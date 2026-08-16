@@ -1,0 +1,57 @@
+RS WireGuard + FreeRADIUS automatic onboarding clone
+Generated: 2026-08-13
+
+NEW APPLICATION FILES
+- system/autoload/RSWireguardControlPlane.php
+- system/plugin/rs_radius_wireguard_onboarding.php
+- system/plugin/ui/rs_radius_wireguard_setup.tpl
+- system/plugin/ui/rs_radius_wireguard_polling.tpl
+
+MODIFIED EXISTING FILES
+- init.php
+  Adds safe named-RADIUS connection fallback to main DB when dedicated RADIUS DB variables are absent.
+- system/plugin/mikrotik_configurator.php
+  Forces RADIUS for WireGuard-managed routers; detects active DHCP WAN; labels management interfaces.
+- system/plugin/ui/mikrotik_configurator_config_ui.tpl
+  Locks RADIUS auth for auto-onboarded routers and excludes WAN/WireGuard from client port selection.
+- ui/ui/admin/routers/add.tpl
+  Adds recommended Automatic Setup entry without removing manual setup.
+- ui/ui/admin/routers/list.tpl
+  Adds Automatic Setup button.
+
+NEW SERVER/DEPLOYMENT FILES
+- deploy/rs-wireguard-radius/install-wireguard-radius.sh
+- deploy/rs-wireguard-radius/rs-wireguard-manage
+- deploy/rs-wireguard-radius/rs-radius-manage
+- deploy/rs-wireguard-radius/validate-integration.sh
+- deploy/rs-wireguard-radius/README.md
+- deploy/rs-wireguard-radius/CLONE_COMPARISON.md
+
+PROVEN V6 BEHAVIORS CLONED
+- RouterOS 7.18-compatible script (no unsupported certificate/settings command)
+- one-time activation callback with explicit application response validation
+- WireGuard peer state handshake proof instead of relying on ICMP success
+- private server-managed per-router WireGuard IP allocation
+- RouterOS API credential rotation and API restriction to WireGuard server /32
+- firewall rule placement before default input drop without moving built-in rules
+- RADIUS auth 1812 + accounting 1813 over WireGuard
+- CoA 3799
+- dynamic SQL NAS upsert + FreeRADIUS reload
+- RADIUS forced for Hotspot/PPPoE after automatic onboarding
+- authenticated API polling before declaring MikroTik connected
+- automatic handoff to existing port configurator
+- manual legacy router onboarding preserved
+
+DEFAULT ISOLATED SERVER NETWORK
+- wg-rs
+- 10.78.0.0/24
+- server 10.78.0.1
+- UDP 51822
+These defaults intentionally avoid collision with the already-proven NuxHost management tunnel if both systems are hosted on one VPS.
+
+VALIDATION RESULT
+- PHP syntax: PASS
+- shell syntax: PASS
+- generated v6 invariants: PASS
+- forbidden RouterOS 7.18 failure patterns: NOT PRESENT
+- production secrets from the existing NuxHost system: NOT COPIED

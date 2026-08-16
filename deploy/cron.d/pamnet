@@ -1,0 +1,9 @@
+# Pamnet billing — single schedule (do NOT also run cron.php from root crontab)
+# Install: cp deploy/cron.d/pamnet /etc/cron.d/pamnet && chmod 644 /etc/cron.d/pamnet
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+TZ=Africa/Nairobi
+*/2 * * * * root cd /var/www/html/pamnet && /usr/bin/php system/tools/heal_paid_hotspot.php --hours=168 >> /var/log/pamnet-heal.log 2>&1
+* * * * * root cd /var/www/html/pamnet && /usr/bin/php system/tools/sync_usage_sessions.php >> /var/log/pamnet-usage-sync.log 2>&1
+0 * * * * root cd /var/www/html/pamnet && /usr/bin/php system/tools/cleanup_stale_hotspot_access.php --days=2 >> /var/log/pamnet-stale-cleanup.log 2>&1
+*/5 * * * * root cd /var/www/html/pamnet && /usr/bin/php system/cron.php >> /var/log/pamnet-cron.log 2>&1

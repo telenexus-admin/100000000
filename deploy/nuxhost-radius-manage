@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ACTION="${1:-}"
+CONFIG_FILE="${NUXHOST_WIREGUARD_CONFIG:-/etc/nuxhost/wireguard.ini}"
+FREERADIUS_BIN="$(command -v freeradius || command -v radiusd || true)"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+    echo "This helper must run as root." >&2
+    exit 1
+fi
+[[ -n "$FREERADIUS_BIN" ]] || { echo "FreeRADIUS is not installed." >&2; exit 1; }
+
+read_config_value() {
+    local key="$1"
+    awk -F= -v wanted="$key" '
+        /^[[:space:]]*[#;]/ { next }
+        NF >= 2 {
+            k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+            if (k == wanted) {
+                $1=""; sub(/^=/, "", $0); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+                print $0; exit
+            }
+        }
+    ' "$CONFIG_FILE"
+}
+
+WG_SERVER_IP="$(read_config_value server_ip)"
+AUTH_PORT="$(read_config_value radius_auth_port)"
+ACCT_PORT="$(read_config_value radius_accounting_port)"
+AUTH_PORT="${AUTH_PORT:-1812}"
+ACCT_PORT="${ACCT_PORT:-1813}"
+
+validate_config() {
+    "$FREERADIUS_BIN" -XC >/tmp/nuxhost-radius-config-check.log 2>&1 || {
+        tail -n 100 /tmp/nuxhost-radius-config-check.log >&2
+        return 1
+    }
+}
+
+assert_private_listeners() {
+    local public
+    public="$(ss -H -lunp 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\*|\[::\]):(1812|1813)$/ { print }')"
+    if [[ -n "$public" ]]; then
+        echo "Public RADIUS listeners detected:" >&2
+        echo "$public" >&2
+        return 1
+    fi
+
+    for port in "$AUTH_PORT" "$ACCT_PORT"; do
+        local count
+        count="$(ss -H -lunp 2>/dev/null | awk -v ep="${WG_SERVER_IP}:${port}" '$4 == ep {n++} END {print n+0}')"
+        [[ "$count" == "1" ]] || {
+            echo "Expected exactly one private RADIUS socket ${WG_SERVER_IP}:${port}; found ${count}." >&2
+            return 1
+        }
+    done
+}
+
+case "$ACTION" in
+    reload|restart)
+        validate_config
+        systemctl restart freeradius
+        systemctl is-active --quiet freeradius || {
+            journalctl -u freeradius -n 80 --no-pager >&2
+            exit 1
+        }
+        assert_private_listeners
+        echo "FreeRADIUS restarted with private WireGuard listeners."
+        ;;
+    check)
+        validate_config
+        systemctl is-active --quiet freeradius
+        assert_private_listeners
+        echo "FreeRADIUS configuration and listener checks passed."
+        ;;
+    status)
+        systemctl is-active freeradius
+        ss -H -lunp 2>/dev/null | awk '$4 ~ /:(1812|1813|18120)$/ { print }'
+        ;;
+    *)
+        echo "Usage: $0 {reload|restart|check|status}" >&2
+        exit 2
+        ;;
+esac

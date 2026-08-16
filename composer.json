@@ -1,0 +1,16 @@
+{
+    "name": "allxsys/internet-management",
+    "type": "project",
+    "description": "AllxSys Internet Management System for Kenya.",
+    "keywords": ["allxsys","internet","management","mikrotik","hotspot","billing","kenya","mpesa"],
+    "homepage": "https://github.com/allxsys/internet-management",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "AllxSys Team",
+            "email": "info@allxsys.co.ke",
+            "homepage": "https://allxsys.co.ke",
+            "role": "Developer"
+        }
+    ]
+}

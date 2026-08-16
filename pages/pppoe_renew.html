@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<!--
+  PPPoE Captive Portal / Renewal Page
+  ====================================
+  Served to expired PPPoE customers. The MikroTik router's
+  "paygrid-pppoe-expired" walled-garden profile (see
+  system/plugin/mikrotik_configurator.php :: generatePppoeRSC) DST-NATs
+  port 80 on the expired pool (10.99.99.0/24) to the billing host
+  running this file.
+
+  Flow:
+    1) Customer enters / is remembered by PPPoE username (pre-populated
+       from cookie when possible).
+    2) Backend GetPppoePlans() returns PPPoE plans for the customer's
+       router; cards render identically to the hotspot login.html.
+    3) Customer picks a plan, enters M-Pesa number.
+    4) CreatePppoeRenewal() -> InitiateStkpush -> VerifyPppoe polls
+       until the gateway callback flips status=2, at which point
+       Package::rechargeUser -> MikrotikPppoe::add_customer moves the
+       secret back to the paid profile. A session drop prompts the
+       client to re-dial and the router puts them back in the normal
+       pool.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FASTNET PPPoE - Renew</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            DEFAULT: '#15803d',
+                            50:  '#f0fdf4', 100: '#dcfce7', 200: '#bbf7d0',
+                            300: '#86efac', 400: '#4ade80', 500: '#22c55e',
+                            600: '#16a34a', 700: '#15803d', 800: '#166534',
+                            900: '#14532d'
+                        }
+                    },
+                    fontFamily: { lexend: ['Lexend', 'sans-serif'] }
+                }
+            }
+        };
+    </script>
+</head>
+<body class="font-lexend min-h-screen bg-gradient-to-b from-brand-800 to-brand-900 text-gray-100">
+    <div class="container mx-auto px-2 py-4 max-w-3xl">
+        <div class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl mb-6 overflow-hidden border border-white/10">
+            <div class="p-3">
+                <h1 class="text-2xl font-bold text-center text-green-300 mb-1">FASTNET PPPoE</h1>
+                <p class="text-center text-xs uppercase tracking-widest text-orange-300 mb-2">Account Renewal Portal</p>
+                <p class="text-gray-100/90 text-center text-sm mb-3">Your PPPoE package has expired. Pick a new package to restore your internet.</p>
+                <div class="flex items-center justify-center gap-2 py-2 px-4 bg-white/5 rounded-xl">
+                    <i class="fas fa-headset text-green-300"></i>
+                    <p class="text-sm font-medium">Customer Care:
+                        <a id="customerCareLink" href="tel:0718289977"><span id="customerCareNumber">0718289977</span></a>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Username lookup card: we need to know which customer this is -->
+        <div id="usernameCard" class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl overflow-hidden border border-white/10 mb-6">
+            <div class="p-6 space-y-4">
+                <h3 class="text-lg font-semibold text-green-300">Enter your PPPoE username</h3>
+                <p class="text-sm text-gray-200/80">Same username you use to dial your PPPoE connection.</p>
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <input id="pppoeUsernameInput" type="text" placeholder="e.g. john_pppoe"
+                           class="flex-grow px-4 py-3 bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500/50 text-white placeholder:text-gray-400"
+                           autocomplete="off">
+                    <button id="lookupBtn" type="button"
+                            class="bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-6 rounded-xl transition duration-200">
+                        Continue
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Packages + payment card (shown after username confirmed) -->
+        <div id="packagesWrap" class="hidden">
+            <div class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-xl mb-6 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <p class="text-xs text-gray-300">Renewing account</p>
+                    <p class="text-lg font-semibold text-green-300" id="confirmedUsername">—</p>
+                </div>
+                <button id="changeUserBtn" type="button" class="text-sm text-orange-300 hover:text-orange-200 underline">
+                    Use different username
+                </button>
+            </div>
+
+            <div class="space-y-4 mb-6">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-xl font-semibold text-green-300">PPPoE Packages</h2>
+                    <div class="h-px flex-grow bg-white/10 ml-4"></div>
+                </div>
+                <div id="cards-container" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                    <div class="col-span-full text-center text-sm text-gray-300 py-8">
+                        <i class="fas fa-spinner fa-spin mr-2"></i> Loading packages...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center">
+            <p class="text-sm text-gray-300">&copy; <span id="footerYear"></span> powered by Antiqua.</p>
+        </div>
+    </div>
+
+<script>
+// -----------------------------------------------------------------------
+// CONFIG: where the billing backend lives.
+//
+// Default = auto-detect from the page's own origin, so this file works
+// unchanged on:
+//   - XAMPP dev:   http://localhost/antiqua/pages/pppoe_renew.html
+//   - Production:  https://billing.yourdomain.tld/pages/pppoe_renew.html
+//
+// IMPORTANT: For Safaricom Daraja STK to actually complete, the host
+// serving this page must be reachable over HTTPS on the public internet
+// (Daraja posts the payment callback to it). When testing locally,
+// "Lookup username" and "Packages" will work, but the STK push itself
+// will come back with "Invalid CallBackURL" because Safaricom can't
+// reach http://localhost.
+//
+// If you ever need to pin this to a specific host (e.g. the page is
+// served from a captive-portal box separate from billing), replace the
+// IIFE below with: const APP_URL = 'https://your-billing-host';
+// -----------------------------------------------------------------------
+const APP_URL = (function () {
+    var base = window.location.origin;
+    // Strip the trailing "/pages/<anything>" so APP_URL points at the
+    // billing root (e.g. "http://localhost/antiqua" or
+    // "https://billing.example.com").
+    var path = window.location.pathname.replace(/\/pages\/[^\/]*$/, '');
+    return base + path;
+})();
+// Default router the PPPoE user is on. If you serve multiple routers you
+// can set this from the customer record returned by pppoe_lookup.
+let ROUTER_ID = 1;
+
+// -----------------------------------------------------------------------
+// Cookie helpers (pppoe_username persists across visits)
+// -----------------------------------------------------------------------
+function setCookie(name, value, days) {
+    var expires = "";
+    if (days) {
+        var d = new Date();
+        d.setTime(d.getTime() + days * 24 * 60 * 60 * 1000);
+        expires = "; expires=" + d.toUTCString();
+    }
+    document.cookie = name + "=" + (value || "") + expires + "; path=/";
+    try { localStorage.setItem(name, value); } catch (e) {}
+}
+function getCookie(name) {
+    var nameEQ = name + "=";
+    var ca = document.cookie.split(';');
+    for (var i = 0; i < ca.length; i++) {
+        var c = ca[i]; while (c.charAt(0) === ' ') c = c.substring(1);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length);
+    }
+    try {
+        var lv = localStorage.getItem(name);
+        if (lv) { setCookie(name, lv, 365); return lv; }
+    } catch (e) {}
+    return null;
+}
+
+// -----------------------------------------------------------------------
+// Phone formatting (same rules as login.html)
+// -----------------------------------------------------------------------
+function formatPhoneNumber(phoneNumber) {
+    if (!phoneNumber) return '';
+    phoneNumber = String(phoneNumber).trim();
+    if (phoneNumber.charAt(0) === '+') phoneNumber = phoneNumber.substring(1);
+    if (phoneNumber.charAt(0) === '0') phoneNumber = '254' + phoneNumber.substring(1);
+    if (/^(7|1)/.test(phoneNumber)) phoneNumber = '254' + phoneNumber;
+    return phoneNumber;
+}
+
+// -----------------------------------------------------------------------
+// Username lookup (confirms the account exists before asking for payment)
+// -----------------------------------------------------------------------
+let CURRENT_USERNAME = '';
+let CURRENT_PHONE    = '';
+
+function confirmUsername(username) {
+    return fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=pppoe_lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data || data.status !== 'success') {
+            throw new Error((data && data.message) || 'Account not found');
+        }
+        CURRENT_USERNAME = data.pppoe_username || data.username || username;
+        CURRENT_PHONE    = data.phone || '';
+        if (data.router_id) ROUTER_ID = data.router_id;
+        setCookie('pppoe_username', CURRENT_USERNAME, 365);
+        return data;
+    });
+}
+
+function onUsernameConfirmed() {
+    document.getElementById('usernameCard').classList.add('hidden');
+    document.getElementById('packagesWrap').classList.remove('hidden');
+    document.getElementById('confirmedUsername').textContent = CURRENT_USERNAME;
+    loadPackages();
+}
+
+function lookupAndContinue() {
+    var u = (document.getElementById('pppoeUsernameInput').value || '').trim();
+    if (!u) {
+        Swal.fire({ icon: 'warning', title: 'Username required', text: 'Please enter your PPPoE username.' });
+        return;
+    }
+    Swal.fire({ title: 'Checking account...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+    confirmUsername(u)
+        .then(() => { Swal.close(); onUsernameConfirmed(); })
+        .catch(err => {
+            Swal.fire({ icon: 'error', title: 'Not found', text: err.message || 'Unknown error' });
+        });
+}
+
+// -----------------------------------------------------------------------
+// Package list
+// -----------------------------------------------------------------------
+function loadPackages() {
+    var container = document.getElementById('cards-container');
+    container.innerHTML = '<div class="col-span-full text-center text-sm text-gray-300 py-8"><i class="fas fa-spinner fa-spin mr-2"></i> Loading packages...</div>';
+
+    fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=pppoe_plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ router_id: ROUTER_ID })
+    })
+    .then(r => r.json())
+    .then(populateCards)
+    .catch(() => {
+        container.innerHTML = '<div class="col-span-full text-center text-sm text-red-300 py-8">Could not load packages. Check your connection and try again.</div>';
+    });
+}
+
+function populateCards(data) {
+    var container = document.getElementById('cards-container');
+    container.innerHTML = '';
+    if (!data || !data.length || !data[0].plans_pppoe || !data[0].plans_pppoe.length) {
+        container.innerHTML = '<div class="col-span-full text-center text-sm text-gray-300 py-8">No PPPoE packages available right now. Please contact support.</div>';
+        return;
+    }
+
+    var plans = data[0].plans_pppoe.slice().sort((a, b) => parseFloat(a.price || 0) - parseFloat(b.price || 0));
+
+    plans.forEach(function(item) {
+        var planId = item.planId || item.id;
+        var routerId = item.routerId || ROUTER_ID;
+        var price = item.price || 0;
+        var card = document.createElement('div');
+        card.className = 'group relative cursor-pointer bg-white rounded-xl overflow-hidden transition-all duration-300 hover:scale-105 hover:shadow-xl border border-gray-100';
+        card.onclick = function() { handlePhoneNumberSubmission(planId, routerId, price, item.planname); };
+        card.innerHTML =
+            "<div class='flex flex-col h-full p-2 space-y-1'>" +
+            "  <div class='text-center'><h3 class='font-semibold text-brand-800 uppercase text-xs sm:text-sm md:text-base line-clamp-1'>" + (item.planname || 'PLAN') + "</h3></div>" +
+            "  <div class='text-center bg-brand-50 rounded-lg p-1'><p class='text-lg sm:text-xl font-bold text-brand-700'><span class='text-xs text-brand-900/70'>" + (item.currency || 'KES') + "</span> " + price + "</p></div>" +
+            "  <div class='space-y-0 text-center mt-auto'>" +
+            "    <p class='text-brand-800 font-medium text-xs sm:text-sm'><i class='fas fa-clock mr-1 text-brand-600'></i> " + (item.validity || 1) + " " + (item.timelimit || 'day') + "</p>" +
+            "    <p class='text-brand-900/70 font-medium text-xs sm:text-sm'><i class='fas fa-wifi mr-1 text-brand-500'></i> " + ((item.downlimit || '') + (item.downlimit ? 'Mbps' : 'PPPoE')) + "</p>" +
+            "  </div>" +
+            "</div>";
+        container.appendChild(card);
+    });
+}
+
+// -----------------------------------------------------------------------
+// Payment flow
+// -----------------------------------------------------------------------
+function handlePhoneNumberSubmission(planId, routerId, price, planName) {
+    Swal.fire({
+        title: 'Renew ' + (planName || 'Plan'),
+        input: 'tel',
+        inputPlaceholder: 'M-Pesa number',
+        text: 'Pay Kes ' + price + ' for ' + CURRENT_USERNAME,
+        inputValue: CURRENT_PHONE || '',
+        showCancelButton: true,
+        confirmButtonColor: '#15803d',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Pay Now',
+        showLoaderOnConfirm: true,
+        inputValidator: v => { if (!v) return 'Phone number required'; },
+        preConfirm: (phoneNumber) => {
+            var formatted = formatPhoneNumber(phoneNumber);
+            return fetch(APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=pppoe_grant', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    phone_number: formatted,
+                    plan_id: planId,
+                    router_id: routerId,
+                    username: CURRENT_USERNAME
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'error') throw new Error(data.message);
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Processing',
+                    html: 'A payment request has been sent to your phone.',
+                    showConfirmButton: false,
+                    allowOutsideClick: false,
+                    didOpen: () => { Swal.showLoading(); pollPaymentStatus(); }
+                });
+                return formatted;
+            })
+            .catch(err => { Swal.showValidationMessage(err.message); });
+        },
+        allowOutsideClick: () => !Swal.isLoading()
+    });
+}
+
+function pollPaymentStatus() {
+    var checkInterval = setInterval(function() {
+        $.ajax({
+            url: APP_URL + '/index.php?_route=plugin/CreateHotspotuser&type=pppoe_verify',
+            method: 'POST',
+            data: JSON.stringify({ username: CURRENT_USERNAME }),
+            contentType: 'application/json',
+            dataType: 'json',
+            success: function(data) {
+                if (data.Resultcode === '3') {
+                    clearInterval(checkInterval);
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Payment Successful',
+                        html: (data.Message || 'Renewed.') +
+                              '<br><br><b>Please disconnect and reconnect your PPPoE session.</b>',
+                        confirmButtonColor: '#15803d'
+                    });
+                } else if (data.Resultcode === '2') {
+                    clearInterval(checkInterval);
+                    Swal.fire({ icon: 'error', title: 'Payment Issue', text: data.Message || 'Payment failed' });
+                }
+            }
+        });
+    }, 2000);
+
+    // Hard timeout after 10 minutes
+    setTimeout(function() {
+        clearInterval(checkInterval);
+    }, 10 * 60 * 1000);
+}
+
+// -----------------------------------------------------------------------
+// Boot
+// -----------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('footerYear').textContent = new Date().getFullYear();
+
+    // Pre-fill username from cookie/localStorage if we've seen them before.
+    var cached = getCookie('pppoe_username');
+    if (cached) {
+        document.getElementById('pppoeUsernameInput').value = cached;
+    }
+
+    document.getElementById('lookupBtn').addEventListener('click', lookupAndContinue);
+    document.getElementById('pppoeUsernameInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') lookupAndContinue();
+    });
+    document.getElementById('changeUserBtn').addEventListener('click', function() {
+        document.getElementById('packagesWrap').classList.add('hidden');
+        document.getElementById('usernameCard').classList.remove('hidden');
+    });
+
+    // If we had a username cached, auto-advance to the package list so the
+    // common case is a single tap.
+    if (cached) {
+        confirmUsername(cached).then(onUsernameConfirmed).catch(function() {
+            // stay on the lookup card if the cached username no longer resolves
+        });
+    }
+});
+</script>
+</body>
+</html>
