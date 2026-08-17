@@ -65,7 +65,7 @@ function rs14_ping_wireguard_routers(array $routers)
             $marker = 'RS14_' . $routerId;
             $commands[] = '( ' . escapeshellarg($ping)
                 . ' -n -c 1 -W 1 ' . escapeshellarg($ip)
-                . ' >/dev/null 2>&1 && printf %s\\n ' . escapeshellarg($marker)
+                . ' >/dev/null 2>&1 && printf ' . escapeshellarg("%s\n") . ' ' . escapeshellarg($marker)
                 . ' ) &';
         }
 
