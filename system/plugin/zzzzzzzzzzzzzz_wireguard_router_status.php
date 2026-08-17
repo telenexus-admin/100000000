@@ -8,9 +8,9 @@
  * false Offline/Unreachable states when the tunnel/router is reachable but the
  * API service is busy, restricted or temporarily unavailable.
  *
- * This layer only heals a false-negative state. It never marks a router
- * Offline. A WireGuard router that answers ICMP on its assigned tunnel IP is
- * considered network-reachable and may remain Online even when API/8728 is not.
+ * This layer only heals false-negative states. It never marks a router Offline.
+ * A WireGuard router that answers ICMP on its assigned tunnel IP is considered
+ * network-reachable even when API/8728 is unavailable.
  */
 
 function rs14_exec_available()
@@ -34,8 +34,8 @@ function rs14_ping_binary()
 }
 
 /**
- * Ping validated WireGuard IPs concurrently, so a dashboard with several
- * genuinely-offline routers does not wait one second per router.
+ * Ping validated WireGuard IPs concurrently, so several genuinely-offline
+ * routers do not add one second each to a dashboard/cron run.
  *
  * @return array<int,bool> router id => reachable
  */
@@ -51,8 +51,6 @@ function rs14_ping_wireguard_routers(array $routers)
         return $reachable;
     }
 
-    // Small batches avoid creating an excessive number of processes on a
-    // large ISP installation while keeping total wait time low.
     foreach (array_chunk($routers, 32, true) as $batch) {
         $commands = [];
         foreach ($batch as $routerId => $ip) {
@@ -97,10 +95,16 @@ function rs14_heal_wireguard_router_statuses($source = 'runtime')
             ->where('management_transport', 'wireguard')
             ->find_many();
 
+        // On dashboard requests only stale Offline/Unreachable rows need a
+        // liveness probe. After cron, check every WireGuard router because the
+        // legacy API monitor may have just incremented its 8728 failure counter
+        // while leaving the current status Online for the first two failures.
+        $checkAll = ((string) $source === 'cron-shutdown');
         $candidates = [];
         $models = [];
         foreach ($rows as $router) {
-            if (strcasecmp(trim((string) $router['status']), 'Online') === 0) {
+            $currentlyOnline = strcasecmp(trim((string) $router['status']), 'Online') === 0;
+            if (!$checkAll && $currentlyOnline) {
                 continue;
             }
 
@@ -132,38 +136,45 @@ function rs14_heal_wireguard_router_statuses($source = 'runtime')
             }
 
             $router = $models[$id];
+            $previousStatus = trim((string) $router['status']);
             $router->status = 'Online';
             $router->last_seen = $lastSeen;
             $router->save();
 
+            $failFile = '';
+            $hadApiFailureCounter = false;
             if (!empty($CACHE_PATH)) {
                 $failFile = rtrim((string) $CACHE_PATH, '/\\')
                     . DIRECTORY_SEPARATOR . 'router_fail'
                     . DIRECTORY_SEPARATOR . 'r' . (int) $id . '.count';
+                $hadApiFailureCounter = is_file($failFile);
                 @unlink($failFile);
             }
 
-            error_log(
-                '[wireguard-router-status] router=' . (int) $id
-                . ' ip=' . $candidates[$id]
-                . ' state=Online source=' . preg_replace('/[^a-z0-9_.-]/i', '', (string) $source)
-                . ' reason=wireguard-tunnel-reachable'
-            );
+            if (strcasecmp($previousStatus, 'Online') !== 0 || $hadApiFailureCounter) {
+                error_log(
+                    '[wireguard-router-status] router=' . (int) $id
+                    . ' ip=' . $candidates[$id]
+                    . ' state=Online source=' . preg_replace('/[^a-z0-9_.-]/i', '', (string) $source)
+                    . ' reason=wireguard-tunnel-reachable'
+                );
+            }
         }
     } catch (Throwable $e) {
         error_log('[wireguard-router-status] heal failed: ' . $e->getMessage());
     }
 }
 
-// Correct stale false-negative status before dashboard widgets read tbl_routers.
+// Correct a stale false-negative status before dashboard widgets read tbl_routers.
 $rs14Route = trim((string) ($_GET['_route'] ?? ''));
 if (PHP_SAPI !== 'cli' && $rs14Route === 'dashboard') {
     rs14_heal_wireguard_router_statuses('dashboard');
 }
 
-// system/cron.php includes init.php (and therefore this plugin). The legacy
-// monitor may mark a tunnel-reachable router Offline after API/8728 failures;
-// correct that false negative after the cron run completes.
+// system/cron.php includes init.php, which auto-loads plugins. The legacy
+// monitor may fail API/8728 even when the WireGuard tunnel is healthy. Probe
+// tunnel reachability after cron and clear that API-only failure counter so it
+// cannot accumulate into a false Offline state/alert.
 $rs14Script = basename((string) ($_SERVER['SCRIPT_FILENAME'] ?? ''));
 if (PHP_SAPI === 'cli' && $rs14Script === 'cron.php') {
     register_shutdown_function('rs14_heal_wireguard_router_statuses', 'cron-shutdown');
