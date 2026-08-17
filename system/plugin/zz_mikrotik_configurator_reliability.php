@@ -134,6 +134,27 @@ function rs_mikrotik_configurator_upload_login($client, $publicUrl, $htmlDirecto
 
     $destination = $directory . '/login.html';
 
+    /*
+     * Router configuration must not wait for /tool/fetch.  On some RouterOS
+     * builds the fetch/file operation can take long enough for the browser to
+     * sit on "Configuring Router..." indefinitely even though bridge, DHCP,
+     * HotSpot and RADIUS configuration already succeeded.
+     *
+     * zzzzzzzzzzzz_hotspot_direct_publish.php queues the V2 publisher after
+     * the configuration request.  Keep the current live login.html untouched
+     * here and let that worker publish/verify the replacement independently.
+     */
+    $routeNow = isset($_GET['_route']) ? (string) $_GET['_route'] : '';
+    if (strpos($routeNow, 'mikrotik_configurator_config_process') !== false) {
+        $routerId = isset($_POST['router_id']) ? (int) $_POST['router_id'] : 0;
+        error_log('[mikrotik-configurator] router=' . $routerId . ' stage=portal publication queued');
+        return [
+            'path' => $destination,
+            'size' => 'queued',
+            'queued' => true,
+        ];
+    }
+
     try {
         $print = new RouterOS\Request('/file/print');
         $print->setQuery(RouterOS\Query::where('name', $destination));
@@ -214,7 +235,7 @@ JS;
         .removeClass('alert-warning alert-danger')
         .addClass('alert-info')
         .show();
-      $('#routerApiNoticeText').text('Sending configuration to the MikroTik. Keep this page open until the result is shown.');
+      $('#routerApiNoticeText').text('Sending network and RADIUS configuration to the MikroTik. Portal files will publish separately; this page will return a success or failure result.');
     });
 JS;
 
@@ -232,7 +253,7 @@ $(function () {
     var $button = $form.find('button[type="submit"]');
     $button.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Configuring Router...');
     $('#routerApiNotice').removeClass('alert-warning alert-danger').addClass('alert-info').show();
-    $('#routerApiNoticeText').text('Sending configuration to the MikroTik. Keep this page open until the result is shown.');
+    $('#routerApiNoticeText').text('Sending network and RADIUS configuration to the MikroTik. Portal files will publish separately; this page will return a success or failure result.');
   });
 });
 </script>
@@ -399,9 +420,11 @@ function rs_mikrotik_configurator_config_process()
             $html = hotspot_settings_generate_login_html();
             $stored = hotspot_settings_store_login_html($html, rtrim((string) APP_URL, '/'));
 
-            $stage = 'uploading Hotspot login.html to RouterOS Files';
+            $stage = 'queueing Hotspot login.html publication';
             $uploaded = rs_mikrotik_configurator_upload_login($client, $stored['url'], $htmlDirectory);
-            $notes[] = 'Hotspot created; ' . $uploaded['path'] . ' uploaded and verified.';
+            $notes[] = !empty($uploaded['queued'])
+                ? 'Hotspot network created; portal publication queued in background.'
+                : 'Hotspot created; ' . $uploaded['path'] . ' uploaded and verified.';
         }
 
         if (in_array('pppoe', $services, true)) {
