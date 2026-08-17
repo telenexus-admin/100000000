@@ -41,7 +41,19 @@ if ($routerId <= 0) {
 $root = dirname(__DIR__);
 rs_publish_cli_line('BOOT start router=' . $routerId);
 rs_publish_cli_line('BOOT loading init.php');
+
+// This application contains direct-execution guards which inspect
+// $_SERVER['SCRIPT_FILENAME']. A normal standalone CLI script populates that
+// value, while the proven stdin bootstrap (`php <<PHP`) does not. Temporarily
+// remove it only while loading init.php so CLI boot behaves like the working
+// stdin path; restore it immediately afterwards for normal diagnostics.
+$hadScriptFilename = array_key_exists('SCRIPT_FILENAME', $_SERVER);
+$originalScriptFilename = $hadScriptFilename ? $_SERVER['SCRIPT_FILENAME'] : null;
+unset($_SERVER['SCRIPT_FILENAME']);
 require $root . DIRECTORY_SEPARATOR . 'init.php';
+if ($hadScriptFilename) {
+    $_SERVER['SCRIPT_FILENAME'] = $originalScriptFilename;
+}
 rs_publish_cli_line('BOOT init.php loaded');
 
 if (!function_exists('rs11_publish_router_portal')) {
