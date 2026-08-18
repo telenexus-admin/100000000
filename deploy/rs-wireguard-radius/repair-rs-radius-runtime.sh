@@ -13,6 +13,7 @@ UNIT_PATH="/etc/systemd/system/${RS_SERVICE}.service"
 BACKUP_DIR="/root/rs-radius-runtime-repair-$(date +%F-%H%M%S)"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
+step() { echo; echo "===== $* ====="; }
 
 [[ "$(id -u)" -eq 0 ]] || fail "Run this repair as root."
 [[ -n "$FREERADIUS_BIN" ]] || fail "FreeRADIUS is not installed."
@@ -25,18 +26,20 @@ ip -o -4 addr show dev "$WG_INTERFACE" | grep -q " ${RS_IP}/" || fail "$WG_INTER
 install -d -m 700 "$BACKUP_DIR"
 [[ ! -f "$HELPER_TARGET" ]] || cp -a "$HELPER_TARGET" "$BACKUP_DIR/rs-radius-manage.before"
 [[ ! -f "$UNIT_PATH" ]] || cp -a "$UNIT_PATH" "$BACKUP_DIR/${RS_SERVICE}.service.before"
-
 echo "Backup: $BACKUP_DIR"
 
-echo "Validating dedicated RS FreeRADIUS configuration..."
-if ! "$FREERADIUS_BIN" -XC -d "$RS_CONFIG_DIR" >"$BACKUP_DIR/config-check.log" 2>&1; then
-  tail -n 160 "$BACKUP_DIR/config-check.log" >&2
-  fail "Dedicated FreeRADIUS configuration validation failed; nothing was stopped."
+step "VALIDATE DEDICATED RS FREERADIUS"
+if ! timeout 30s "$FREERADIUS_BIN" -XC -d "$RS_CONFIG_DIR" >"$BACKUP_DIR/config-check.log" 2>&1; then
+  tail -n 160 "$BACKUP_DIR/config-check.log" >&2 || true
+  fail "Dedicated FreeRADIUS configuration validation failed or timed out; nothing was stopped."
 fi
 echo "Configuration validation: OK"
 
+step "INSTALL MANAGEMENT HELPER"
 install -o root -g www-data -m 750 "$HELPER_SOURCE" "$HELPER_TARGET"
+echo "Installed: $HELPER_TARGET"
 
+step "INSTALL DEDICATED SYSTEMD UNIT"
 cat >"$UNIT_PATH" <<EOF
 [Unit]
 Description=RS WireGuard FreeRADIUS instance
@@ -45,21 +48,25 @@ Wants=network-online.target wg-quick@${WG_INTERFACE}.service
 
 [Service]
 Type=simple
+User=freerad
+Group=freerad
 ExecStart=${FREERADIUS_BIN} -f -d ${RS_CONFIG_DIR}
 Restart=on-failure
 RestartSec=2
-TimeoutStopSec=15
+TimeoutStartSec=20
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+timeout 15s systemctl daemon-reload || fail "systemctl daemon-reload timed out."
+echo "Installed: $UNIT_PATH"
 
-# Stop a previously-created unit first, then terminate only orphaned processes
-# that explicitly use the dedicated RS config directory.  The normal system
-# FreeRADIUS instance is intentionally left untouched.
-systemctl stop "$RS_SERVICE" 2>/dev/null || true
+step "STOP OLD DEDICATED RS RUNTIME"
+# The previous deployment may have launched /etc/freeradius-rs directly rather
+# than through systemd. Never touch the normal FreeRADIUS process here.
+timeout 12s systemctl stop "$RS_SERVICE" 2>/dev/null || true
 
 mapfile -t stray_pids < <(
   ps -eo pid=,args= | awk -v dir="$RS_CONFIG_DIR" '
@@ -69,13 +76,13 @@ mapfile -t stray_pids < <(
 if ((${#stray_pids[@]})); then
   echo "Stopping orphaned dedicated RS FreeRADIUS PID(s): ${stray_pids[*]}"
   kill -TERM "${stray_pids[@]}" 2>/dev/null || true
-  for _ in {1..30}; do
+  for _ in {1..20}; do
     alive=0
     for pid in "${stray_pids[@]}"; do
       kill -0 "$pid" 2>/dev/null && alive=1 || true
     done
     [[ "$alive" -eq 0 ]] && break
-    sleep 0.2
+    sleep 0.25
   done
   for pid in "${stray_pids[@]}"; do
     if kill -0 "$pid" 2>/dev/null; then
@@ -83,18 +90,35 @@ if ((${#stray_pids[@]})); then
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
+else
+  echo "No orphaned /etc/freeradius-rs process found."
 fi
 
+step "VERIFY RS PORTS ARE FREE"
+for port in 1812 1813; do
+  if ss -H -lunp 2>/dev/null | awk -v ep="${RS_IP}:${port}" '$4 == ep {found=1} END {exit found?0:1}'; then
+    ss -lunp | grep -E "${RS_IP}:(1812|1813)" >&2 || true
+    fail "${RS_IP}:${port} is still occupied after stopping the old RS runtime."
+  fi
+done
+echo "RS auth/accounting ports are free."
+
+step "START DEDICATED RS FREERADIUS SERVICE"
 install -d -o freerad -g freerad -m 755 /run/freeradius 2>/dev/null || true
-systemctl enable "$RS_SERVICE" >/dev/null
-systemctl start "$RS_SERVICE"
+timeout 15s systemctl enable "$RS_SERVICE" >/dev/null || fail "Enabling $RS_SERVICE timed out."
+if ! timeout 25s systemctl start "$RS_SERVICE"; then
+  journalctl -u "$RS_SERVICE" -n 160 --no-pager >&2 || true
+  fail "$RS_SERVICE failed to start or timed out."
+fi
 sleep 2
 
 if ! systemctl is-active --quiet "$RS_SERVICE"; then
   journalctl -u "$RS_SERVICE" -n 160 --no-pager >&2 || true
-  fail "$RS_SERVICE did not start."
+  fail "$RS_SERVICE did not remain active."
 fi
+echo "$RS_SERVICE is active."
 
+step "VERIFY PRIVATE RADIUS LISTENERS"
 for port in 1812 1813; do
   count="$(ss -H -lunp 2>/dev/null | awk -v ep="${RS_IP}:${port}" '$4 == ep {n++} END {print n+0}')"
   [[ "$count" == "1" ]] || {
@@ -107,7 +131,8 @@ if ss -H -lunp 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\*|\[::\]):(1812|1813)$/ {f
   fail "Public RADIUS listener detected."
 fi
 
-"$HELPER_TARGET" check
+step "FINAL RS RADIUS HEALTH CHECK"
+timeout 30s "$HELPER_TARGET" check || fail "RS RADIUS helper health check failed or timed out."
 
 echo
 echo "RS RADIUS RUNTIME REPAIRED"
