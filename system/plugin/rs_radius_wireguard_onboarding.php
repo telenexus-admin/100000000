@@ -269,7 +269,7 @@ function rs_wg_probe_router_api($router)
 function rs_wg_prepare_router($router)
 {
     rs_wg_ensure_schema();
-    $generatorVersion = 7;
+    $generatorVersion = 6;
     $routerId = (int)$router->id();
     if ($routerId <= 0) {
         throw new RuntimeException('The router record is incomplete.');
@@ -393,7 +393,7 @@ function rs_wg_build_routeros_script($routerName, $tunnelIp, $apiUser, $apiPass,
     $serverCidr = $wgServerIp . '/32';
 
     $lines = [
-        '# RS WireGuard + RouterOS API + FreeRADIUS onboarding v7',
+        '# RS WireGuard + RouterOS API + FreeRADIUS onboarding v6',
         '# Router: ' . $safeRouterName,
         '# RouterOS 7.18-compatible bootstrap. Hotspot HTML is not replaced.',
         '/export file=rs-before-wireguard-radius;',
@@ -468,7 +468,7 @@ function rs_wg_build_routeros_script($routerName, $tunnelIp, $apiUser, $apiPass,
         '        /ip/firewall/filter add chain=input action=accept protocol=udp src-address="' . $q($radiusAddress) . '" dst-port=' . $coaPort . ' comment="RS-WG-RADIUS-COA";',
         '    };',
         '    /ppp aaa set use-radius=yes accounting=yes interim-update=5m;',
-        '    :if ([:len [/ip/hotspot/profile find]] > 0) do={ /ip/hotspot/profile set [find] use-radius=yes radius-accounting=yes radius-interim-update=received login-by=http-pap,http-chap,cookie; };',
+        '    :if ([:len [/ip/hotspot/profile find]] > 0) do={ /ip/hotspot/profile set [find] use-radius=yes radius-accounting=yes radius-interim-update=received; };',
         '',
         '    :if ([:len [/radius find where comment="RS-WG-RADIUS"]] = 0) do={ :error "RS stopped: RADIUS entry was not created."; };',
         '    :if ([:len [/user find where comment="RS Router API User"]] = 0) do={ :error "RS stopped: Router API user was not created."; };',
