@@ -216,6 +216,45 @@ function rs17_purge_captive_probe_bypasses($client)
     }
 }
 
+/**
+ * IP walled-garden entries bypass the captive redirect before the HTTP servlet.
+ * Keep web assets in the normal HTTP walled garden instead. Older revisions put
+ * CDN/Google hostnames here, which can share destination IPs with Android probe
+ * endpoints and make connectivitycheck.gstatic.com escape the HotSpot.
+ */
+function rs17_purge_unsafe_ip_walled_garden_hosts($client)
+{
+    $unsafe = [];
+    if (function_exists('pamnet_walled_garden_hosts')) {
+        foreach (pamnet_walled_garden_hosts() as $host) {
+            $unsafe[strtolower(rtrim(trim((string) $host), '.'))] = true;
+        }
+    }
+    if (function_exists('pamnet_captive_probe_hosts')) {
+        foreach (pamnet_captive_probe_hosts() as $host) {
+            $unsafe[strtolower(rtrim(trim((string) $host), '.'))] = true;
+        }
+    }
+
+    foreach ($client->sendSync(new RouterOS\Request('/ip/hotspot/walled-garden/ip/print')) as $row) {
+        $host = strtolower(rtrim(trim((string) $row->getProperty('dst-host')), '.'));
+        $id = trim((string) $row->getProperty('.id'));
+        if ($id === '' || $host === '') {
+            continue;
+        }
+
+        $plainHost = strpos($host, '*.') === 0 ? substr($host, 2) : $host;
+        $ipWrittenAsHost = filter_var($plainHost, FILTER_VALIDATE_IP) !== false;
+        if (!$ipWrittenAsHost && !isset($unsafe[$host]) && !isset($unsafe[$plainHost])) {
+            continue;
+        }
+
+        $remove = new RouterOS\Request('/ip/hotspot/walled-garden/ip/remove');
+        $remove->setArgument('numbers', $id);
+        $client->sendSync($remove);
+    }
+}
+
 function rs17_finalize_captive_portal($client, $router, $bridgeName, $subnet, $dnsName, $htmlDirectory)
 {
     $profileName = $bridgeName . '-Profile';
@@ -291,6 +330,8 @@ function rs17_finalize_captive_portal($client, $router, $bridgeName, $subnet, $d
     $htmlDirectory = trim((string) $htmlDirectory, "/\\");
     $loginPath = $htmlDirectory . '/login.html';
     $apiPath = $htmlDirectory . '/api.json';
+    $rloginPath = $htmlDirectory . '/rlogin.html';
+    $redirectPath = $htmlDirectory . '/redirect.html';
 
     // Manual /ip/hotspot add can leave a valid HotSpot with no servlet pages.
     // Restore RouterOS defaults only when login.html is absent, preserving an
@@ -300,6 +341,22 @@ function rs17_finalize_captive_portal($client, $router, $bridgeName, $subnet, $d
     }
     if (!rs17_file_exists($client, $loginPath)) {
         throw new RuntimeException('HotSpot login.html is missing even after Reset HTML.');
+    }
+
+    // RouterOS serves rlogin.html for unauthenticated requests to remote hosts
+    // and falls back to redirect.html. A custom portal containing only
+    // login.html causes those requests (including Android captive probes) to
+    // return Error 404 instead of redirecting to /login.
+    $redirectServlet = "$(if http-status == 302)Hotspot login required$(endif)\n"
+        . "$(if http-header == \"Location\")$(link-redirect)$(endif)\n";
+    if (!rs17_file_exists($client, $redirectPath)) {
+        rs17_write_small_file($client, $redirectPath, $redirectServlet);
+    }
+    if (!rs17_file_exists($client, $rloginPath)) {
+        rs17_write_small_file($client, $rloginPath, $redirectServlet);
+    }
+    if (!rs17_file_exists($client, $redirectPath) || !rs17_file_exists($client, $rloginPath)) {
+        throw new RuntimeException('HotSpot captive redirect servlet files are missing.');
     }
 
     // RouterOS 7 captive detection expects api.json. Do not reset a customized
@@ -316,6 +373,7 @@ function rs17_finalize_captive_portal($client, $router, $bridgeName, $subnet, $d
     // Probe hosts must reach HotSpot interception. Whitelisting them produces
     // the exact failure "Connected, no Internet" with no Sign-In popup.
     rs17_purge_captive_probe_bypasses($client);
+    rs17_purge_unsafe_ip_walled_garden_hosts($client);
 
     // Remove old billing-domain exceptions, then permit only the current billing
     // endpoint required by the branded portal while unauthenticated.
@@ -352,6 +410,8 @@ function rs17_finalize_captive_portal($client, $router, $bridgeName, $subnet, $d
         . ' gateway=' . $gatewayIp
         . ' dns=' . $dnsName
         . ' login=' . $loginPath
+        . ' rlogin=' . $rloginPath
+        . ' redirect=' . $redirectPath
         . ' api=' . $apiPath
         . ' status=ready'
     );
