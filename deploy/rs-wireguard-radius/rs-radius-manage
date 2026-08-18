@@ -3,30 +3,17 @@ set -Eeuo pipefail
 
 ACTION="${1:-}"
 FREERADIUS_BIN="$(command -v freeradius || command -v radiusd || true)"
-RS_CONFIG_DIR="${RS_FREERADIUS_DIR:-/etc/freeradius-rs}"
-RS_SERVICE="${RS_FREERADIUS_SERVICE:-freeradius-rs}"
 RS_IP="${RS_RADIUS_IP:-10.78.0.1}"
+SERVICE="freeradius"
 
 [[ "$(id -u)" -eq 0 ]] || { echo "This helper must run as root." >&2; exit 1; }
 [[ -n "$FREERADIUS_BIN" ]] || { echo "FreeRADIUS is not installed." >&2; exit 1; }
 
-use_dedicated=0
-if [[ -d "$RS_CONFIG_DIR" ]] && [[ -f "$RS_CONFIG_DIR/radiusd.conf" || -f "$RS_CONFIG_DIR/radiusd.conf.in" ]]; then
-  use_dedicated=1
-fi
-
 validate_config() {
-  if [[ "$use_dedicated" -eq 1 ]]; then
-    "$FREERADIUS_BIN" -XC -d "$RS_CONFIG_DIR" >/tmp/rs-radius-config-check.log 2>&1 || {
-      tail -n 120 /tmp/rs-radius-config-check.log >&2
-      return 1
-    }
-  else
-    "$FREERADIUS_BIN" -XC >/tmp/rs-radius-config-check.log 2>&1 || {
-      tail -n 120 /tmp/rs-radius-config-check.log >&2
-      return 1
-    }
-  fi
+  "$FREERADIUS_BIN" -XC >/tmp/rs-radius-config-check.log 2>&1 || {
+    tail -n 120 /tmp/rs-radius-config-check.log >&2
+    return 1
+  }
 }
 
 assert_no_public_radius() {
@@ -49,31 +36,15 @@ assert_rs_listeners() {
 
 restart_radius() {
   validate_config
-
-  if [[ "$use_dedicated" -eq 1 ]]; then
-    if systemctl cat "$RS_SERVICE" >/dev/null 2>&1; then
-      systemctl restart "$RS_SERVICE"
-      systemctl is-active --quiet "$RS_SERVICE" || {
-        journalctl -u "$RS_SERVICE" -n 120 --no-pager >&2 || true
-        return 1
-      }
-    else
-      echo "Dedicated RS config exists at $RS_CONFIG_DIR but systemd unit $RS_SERVICE is missing." >&2
-      echo "Run deploy/rs-wireguard-radius/repair-rs-radius-runtime.sh once as root." >&2
-      return 1
-    fi
-  else
-    systemctl restart freeradius
-    systemctl is-active --quiet freeradius || {
-      journalctl -u freeradius -n 120 --no-pager >&2 || true
-      return 1
-    }
-  fi
-
+  systemctl restart "$SERVICE"
+  systemctl is-active --quiet "$SERVICE" || {
+    journalctl -u "$SERVICE" -n 120 --no-pager >&2 || true
+    return 1
+  }
   sleep 1
   assert_no_public_radius
   assert_rs_listeners
-  echo "RS FreeRADIUS reloaded and ${RS_IP}:1812/1813 are healthy."
+  echo "FreeRADIUS v6-compatible runtime reloaded on ${RS_IP}:1812/1813."
 }
 
 case "$ACTION" in
@@ -82,31 +53,17 @@ case "$ACTION" in
     ;;
   check)
     validate_config
+    systemctl is-active --quiet "$SERVICE" || { echo "$SERVICE is not active." >&2; exit 1; }
     assert_no_public_radius
     assert_rs_listeners
-    if [[ "$use_dedicated" -eq 1 ]]; then
-      systemctl is-active --quiet "$RS_SERVICE" || {
-        echo "$RS_SERVICE is not active." >&2
-        exit 1
-      }
-    else
-      systemctl is-active --quiet freeradius || {
-        echo "freeradius is not active." >&2
-        exit 1
-      }
-    fi
-    echo "RS FreeRADIUS configuration, service and private listeners are healthy."
+    echo "FreeRADIUS v6-compatible configuration, service and private listeners are healthy."
     ;;
   status)
-    echo "mode=$([[ "$use_dedicated" -eq 1 ]] && echo dedicated || echo default)"
-    echo "config=$([[ "$use_dedicated" -eq 1 ]] && echo "$RS_CONFIG_DIR" || echo default)"
-    if [[ "$use_dedicated" -eq 1 ]]; then
-      systemctl is-active "$RS_SERVICE" || true
-      systemctl is-enabled "$RS_SERVICE" 2>/dev/null || true
-    else
-      systemctl is-active freeradius || true
-      systemctl is-enabled freeradius 2>/dev/null || true
-    fi
+    echo "mode=v6-default"
+    echo "service=$SERVICE"
+    echo "config=/etc/freeradius/3.0"
+    systemctl is-active "$SERVICE" || true
+    systemctl is-enabled "$SERVICE" 2>/dev/null || true
     ss -H -lunp 2>/dev/null | awk '$4 ~ /:(1812|1813|18120)$/ {print}'
     ;;
   *)
