@@ -114,6 +114,16 @@ $replaceSetting = static function (string $text, string $name, string $value, bo
     return $text;
 };
 
+$replaceDatabaseSetting = static function (string $text, string $value) use ($replaceSetting): string {
+    if (preg_match('/(?m)^\s*#?\s*radius_db\s*=/', $text)) {
+        return $replaceSetting($text, 'radius_db', $value);
+    }
+    if (preg_match('/(?m)^\s*#?\s*database\s*=/', $text)) {
+        return $replaceSetting($text, 'database', $value);
+    }
+    throw new RuntimeException('FreeRADIUS SQL setting not found: radius_db/database');
+};
+
 try {
     $updated = $original;
     $updated = $replaceSetting($updated, 'driver', '"rlm_sql_mysql"');
@@ -121,7 +131,7 @@ try {
     $updated = $replaceSetting($updated, 'server', $quote($radiusHost));
     $updated = $replaceSetting($updated, 'login', $quote($radiusUser));
     $updated = $replaceSetting($updated, 'password', $quote($radiusPass));
-    $updated = $replaceSetting($updated, 'database', $quote($radiusName));
+    $updated = $replaceDatabaseSetting($updated, $quote($radiusName));
     $updated = $replaceSetting($updated, 'read_clients', 'yes');
     $updated = $replaceSetting($updated, 'client_table', '"nas"', false);
 } catch (Throwable $e) {
